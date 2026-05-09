@@ -33,3 +33,30 @@ changelog:
       - "^test:"
       - "^ci:"
 
+dockers:
+  - image_templates:
+      - "ghcr.io/dortanes/prox:{{ .Version }}-amd64"
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    goarch: amd64
+
+  - image_templates:
+      - "ghcr.io/dortanes/prox:{{ .Version }}-arm64"
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/dortanes/prox:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/dortanes/prox:{{ .Version }}-amd64"
+      - "ghcr.io/dortanes/prox:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/dortanes/prox:latest"
+    image_templates:
+      - "ghcr.io/dortanes/prox:{{ .Version }}-amd64"
+      - "ghcr.io/dortanes/prox:{{ .Version }}-arm64"

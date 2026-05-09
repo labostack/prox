@@ -81,38 +81,22 @@ prox <command> [flags]
 
 ## Docker
 
+```yaml
+# docker-compose.yml
+services:
+  prox:
+    image: ghcr.io/dortanes/prox:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/:/etc/prox/config/
+    command: ["serve", "-config", "/etc/prox/config/"]
+```
+
+Or with `docker run`:
+
 ```bash
-docker build -t prox .
-docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 prox
-
-# Or mount a config directory:
-docker run -v ./config/:/etc/prox/config/ -p 8080:8080 prox serve -config /etc/prox/config/
-```
-
-## Architecture
-
-```
-config.json5 ─┐
-  web.json5 ──┤ Load + Merge → Validate → Build Router + Actions → Start Listeners
-  api.json5 ──┘                                                          │
-                                                           File watcher / SIGHUP
-                                                                         │
-                                                            Reload → Validate → Atomic swap
-```
-
-```
-prox/
-├── cmd/prox/           CLI entrypoint
-├── internal/
-│   ├── config/         Config types, loader, validator
-│   ├── server/         HTTP(S) lifecycle, hot reload
-│   ├── router/         Path + method matching
-│   ├── action/         Handlers: proxy, static, serve
-│   ├── resource/       Content resolver
-│   └── watcher/        File change detection (polling)
-├── Dockerfile
-├── Makefile
-└── go.mod
+docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/dortanes/prox
 ```
 
 ## License

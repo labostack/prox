@@ -44,3 +44,30 @@ Open an issue with:
 - Your config (redacted if sensitive)
 - Expected vs actual behavior
 - Relevant log output (`-log-level debug`)
+
+## Architecture
+
+```
+config.json5 ─┐
+  web.json5 ──┤ Load + Merge → Validate → Build Router + Actions → Start Listeners
+  api.json5 ──┘                                                          │
+                                                           File watcher / SIGHUP
+                                                                         │
+                                                            Reload → Validate → Atomic swap
+```
+
+```
+prox/
+├── cmd/prox/           CLI entrypoint
+├── internal/
+│   ├── config/         Config types, loader, validator
+│   ├── server/         HTTP(S) lifecycle, hot reload
+│   ├── router/         Path + method matching
+│   ├── action/         Handlers: proxy, static, serve
+│   ├── resource/       Content resolver
+│   └── watcher/        File change detection (polling)
+├── Dockerfile
+├── Makefile
+└── go.mod
+```
+
