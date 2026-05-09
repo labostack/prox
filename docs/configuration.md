@@ -131,7 +131,12 @@ Routes are evaluated in order — first match wins.
 }
 ```
 
-At least one of `domain` or `path` must be specified.
+At least one of `domain` or `path` must be specified. Omit `match` entirely for a **catch-all** route:
+
+```json5
+// Catch-all — matches any request not handled by previous routes.
+{ action: { type: "drop" } }
+```
 
 ### Domain matching
 
@@ -198,6 +203,23 @@ Instead of referencing a named action, you can define one inline:
 | `type`     | string | ✓        | `"proxy"`                             |
 | `upstream` | string | ✓        | `"host:port"` or `"http://host:port"` |
 | `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`               |
+| `headers`  | object |          | Extra headers to send to upstream     |
+
+Headers are injected into every request forwarded to the upstream. This is useful for setting a custom `Host` header, authentication tokens, or any other headers the upstream requires.
+
+```json5
+{
+  match: { domain: "*.**" },
+  action: {
+    type: "proxy",
+    upstream: "https://backend.internal",
+    headers: {
+      Host: "public.example.com",
+      "X-Forwarded-Proto": "https",
+    },
+  },
+}
+```
 
 ### `static` — Static Response
 
@@ -299,6 +321,21 @@ Relays raw TCP connections to an upstream without TLS termination. The proxy pee
 - `pass` routes **must** have a `domain` pattern (SNI matching)
 - `pass` routes **cannot** use `path` or `methods` (these are HTTP-level concepts — not available before TLS termination)
 
+### `drop` — Drop Connection
+
+Silently closes the connection without sending any response. Useful as a catch-all to reject unknown domains or unwanted traffic.
+
+| Field  | Type   | Required | Description |
+| ------ | ------ | -------- | ----------- |
+| `type` | string | ✓        | `"drop"`    |
+
+At L7 (HTTP), the TCP connection is hijacked and closed immediately — no HTTP response is sent. At L4 (when combined with `pass` routes), the raw TCP connection is closed before TLS handshake.
+
+```json5
+// Reject all unmatched domains.
+{ action: { type: "drop" } }
+```
+
 ## L4 Dispatching (pass routes)
 
 When a service has any `pass` routes, prox automatically activates an L4 dispatcher. The dispatcher intercepts raw TCP connections **before** TLS termination:
@@ -308,9 +345,12 @@ Client → :443 TCP
   → Peek SNI from TLS ClientHello (5s timeout)
   → Walk routes in config order
     → First match is "pass" → raw TCP relay to upstream
+    → First match is "drop" → close connection (when dispatcher is active)
     → First match is L7     → TLS termination → HTTP routing
     → No match              → TLS termination → HTTP 404
 ```
+
+> **Note:** `drop` routes work at L7 without the dispatcher (the connection hangs until timeout). When the dispatcher is already active due to `pass` routes, `drop` routes with domain patterns also participate in L4 matching — closing connections before TLS handshake.
 
 **Route order matters.** The dispatcher walks all routes (not just `pass` routes) in config order. The first domain match wins:
 
@@ -396,7 +436,7 @@ The validator checks:
 - HTTP methods are valid
 - Path patterns are well-formed
 - Domain patterns are well-formed (at most one `*` per segment, at least 2 segments, `**` only at end)
-- At least one of `path` or `domain` in each route
+- At least one of `path` or `domain` in each route (or omit `match` for catch-all)
 - TLS cert/key are provided when TLS is enabled
 - `pass` routes require a `domain` (SNI matching) and cannot use `path` or `methods`
 - `pass` actions require an `upstream`

@@ -100,6 +100,43 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 	}
 }
 
+func TestProxy_CustomHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// In Go, Host header is stored in r.Host, not r.Header.
+		if r.Host != "custom.example.com" {
+			t.Errorf("expected Host 'custom.example.com', got %q", r.Host)
+		}
+		if r.Header.Get("X-Custom") != "value" {
+			t.Errorf("expected X-Custom header 'value', got %q", r.Header.Get("X-Custom"))
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	act := &config.Action{
+		Type:     config.ActionTypeProxy,
+		Upstream: upstream.URL,
+		Headers: map[string]string{
+			"Host":     "custom.example.com",
+			"X-Custom": "value",
+		},
+	}
+
+	handler, err := NewProxy(act)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/test", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+}
+
 func TestProxy_UpstreamDown(t *testing.T) {
 	act := &config.Action{
 		Type:     config.ActionTypeProxy,

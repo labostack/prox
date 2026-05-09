@@ -186,6 +186,8 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 
 // buildDispatcherRoutes compiles L4 routes for the dispatcher.
 // Returns nil if the service has no "pass" routes (no dispatcher needed).
+// When the dispatcher is active, "drop" routes with domain patterns also
+// participate in L4 matching as a bonus.
 func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatcher.Route {
 	hasPass := false
 	for _, route := range svc.Routes {
@@ -198,7 +200,7 @@ func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatche
 		return nil
 	}
 
-	// Build all routes (not just pass routes) — order matters for correct dispatching.
+	// Build all routes (not just pass/drop routes) — order matters for correct dispatching.
 	routes := make([]*dispatcher.Route, 0, len(svc.Routes))
 	for _, route := range svc.Routes {
 		if route.Match == nil || route.Match.Domain == "" {
@@ -216,9 +218,14 @@ func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatche
 			dr.DomainSegments = dr.DomainSegments[:last]
 		}
 
-		if act := resolveAction(route, cfg); act != nil && act.Type == config.ActionTypePass {
-			dr.IsPass = true
-			dr.Upstream = act.Upstream
+		if act := resolveAction(route, cfg); act != nil {
+			switch act.Type {
+			case config.ActionTypePass:
+				dr.IsPass = true
+				dr.Upstream = act.Upstream
+			case config.ActionTypeDrop:
+				dr.IsDrop = true
+			}
 		}
 
 		routes = append(routes, dr)
@@ -453,6 +460,11 @@ func (h *swappableHandler) Swap(rt *router.Router, registry *action.Registry) {
 func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if v := recover(); v != nil {
+			// http.ErrAbortHandler is a Go internal signal, not a real panic.
+			// Re-panic so the HTTP server handles it silently.
+			if v == http.ErrAbortHandler {
+				panic(v)
+			}
 			slog.Error("panic recovered",
 				"service", h.name,
 				"path", r.URL.Path,

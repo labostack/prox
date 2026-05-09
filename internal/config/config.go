@@ -40,6 +40,7 @@ type Route struct {
 // Domain supports exact matches ("example.com") and wildcard prefixes ("*.example.com").
 // Methods is optional — an empty list matches all HTTP methods.
 // At least one of Path or Domain must be specified.
+// A nil Match acts as a catch-all route that matches everything.
 type Match struct {
 	Path    string   `json:"path,omitempty"`
 	Domain  string   `json:"domain,omitempty"`
@@ -54,6 +55,7 @@ const (
 	ActionTypeStatic ActionType = "static"
 	ActionTypeServe  ActionType = "serve"
 	ActionTypePass   ActionType = "pass" // L4 TCP pass-through (no TLS termination)
+	ActionTypeDrop   ActionType = "drop" // Silently close the connection
 )
 
 // Action defines what happens when a route matches.
@@ -64,10 +66,12 @@ type Action struct {
 	Upstream string   `json:"upstream,omitempty"`
 	Timeout  Duration `json:"timeout,omitempty"`
 
-	// Static-specific fields.
-	Status  int               `json:"status,omitempty"`
+	// Shared fields (proxy, static).
 	Headers map[string]string `json:"headers,omitempty"`
-	BodyRef ResourceRef       `json:"body_ref,omitempty"`
+
+	// Static-specific fields.
+	Status  int         `json:"status,omitempty"`
+	BodyRef ResourceRef `json:"body_ref,omitempty"`
 
 	// Serve-specific fields.
 	Root string `json:"root,omitempty"` // Directory to serve (e.g. "./public").

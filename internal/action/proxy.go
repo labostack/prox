@@ -24,7 +24,21 @@ func NewProxy(act *config.Action) (*Proxy, error) {
 		return nil, err
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	headers := act.Headers
+
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.SetXForwarded()
+			for k, v := range headers {
+				if http.CanonicalHeaderKey(k) == "Host" {
+					pr.Out.Host = v
+				} else {
+					pr.Out.Header.Set(k, v)
+				}
+			}
+		},
+	}
 
 	timeout := 30 * time.Second
 	if act.Timeout.Duration > 0 {

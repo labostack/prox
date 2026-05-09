@@ -82,18 +82,16 @@ func (v *validator) validateService(name string, svc *Service) {
 func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 	prefix := fmt.Sprintf("service %q route #%d", svcName, idx)
 
-	if route.Match == nil {
-		v.addIssue("%s: match is required", prefix)
-		return
-	}
+	// Nil match is allowed — it acts as a catch-all route.
+	if route.Match != nil {
+		if route.Match.Path == "" && route.Match.Domain == "" {
+			v.addIssue("%s: match.path or match.domain is required (or omit match entirely for catch-all)", prefix)
+		}
 
-	if route.Match.Path == "" && route.Match.Domain == "" {
-		v.addIssue("%s: match.path or match.domain is required", prefix)
+		v.validatePath(prefix, route.Match.Path)
+		v.validateDomain(prefix, route.Match.Domain)
+		v.validateMethods(prefix, route.Match.Methods)
 	}
-
-	v.validatePath(prefix, route.Match.Path)
-	v.validateDomain(prefix, route.Match.Domain)
-	v.validateMethods(prefix, route.Match.Methods)
 
 	if route.Action.IsEmpty() {
 		v.addIssue("%s: action is required", prefix)
@@ -104,13 +102,15 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 			v.addIssue("%s: action %q not found in actions", prefix, route.Action.Name)
 		} else if act.Type == ActionTypePass {
 			// Pass routes operate at L4 (pre-TLS) — only domain/SNI matching is available.
-			if route.Match.Path != "" {
-				v.addIssue("%s: pass routes cannot use path matching (L4 operates before HTTP)", prefix)
+			if route.Match != nil {
+				if route.Match.Path != "" {
+					v.addIssue("%s: pass routes cannot use path matching (L4 operates before HTTP)", prefix)
+				}
+				if len(route.Match.Methods) > 0 {
+					v.addIssue("%s: pass routes cannot use method matching (L4 operates before HTTP)", prefix)
+				}
 			}
-			if len(route.Match.Methods) > 0 {
-				v.addIssue("%s: pass routes cannot use method matching (L4 operates before HTTP)", prefix)
-			}
-			if route.Match.Domain == "" {
+			if route.Match == nil || route.Match.Domain == "" {
 				v.addIssue("%s: pass routes require a domain pattern (SNI matching)", prefix)
 			}
 		}
@@ -211,11 +211,13 @@ func (v *validator) validateAction(name string, action *Action) {
 		v.validateServeAction(name, action)
 	case ActionTypePass:
 		v.validatePassAction(name, action)
+	case ActionTypeDrop:
+		// No fields to validate.
 	case "":
 		v.addIssue("action %q: type is required", name)
 	default:
-		v.addIssue("action %q: unknown type %q (expected %q, %q, %q, or %q)",
-			name, action.Type, ActionTypeProxy, ActionTypeStatic, ActionTypeServe, ActionTypePass)
+		v.addIssue("action %q: unknown type %q (expected %q, %q, %q, %q, or %q)",
+			name, action.Type, ActionTypeProxy, ActionTypeStatic, ActionTypeServe, ActionTypePass, ActionTypeDrop)
 	}
 }
 

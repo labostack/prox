@@ -22,6 +22,7 @@ type Route struct {
 	DomainSegments []string // split + lowered segments for glob matching
 	DomainGlob     bool     // true when pattern ends with "**"
 	IsPass         bool     // true for action type "pass"
+	IsDrop         bool     // true for action type "drop"
 	Upstream       string   // dial address for pass routes
 }
 
@@ -114,6 +115,16 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 	for _, route := range routes {
 		if !matchDomain(route.DomainSegments, route.DomainGlob, sniLower) {
 			continue
+		}
+
+		if route.IsDrop {
+			slog.Debug("l4 drop",
+				"sni", sni,
+				"pattern", route.Domain,
+				"remote", conn.RemoteAddr(),
+			)
+			conn.Close()
+			return
 		}
 
 		if route.IsPass {

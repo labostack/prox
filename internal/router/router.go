@@ -64,31 +64,35 @@ func New(routes []*config.Route) *Router {
 	for _, r := range routes {
 		cr := &compiledRoute{
 			action: r.Action.Name,
-			path:   r.Match.Path,
-			domain: r.Match.Domain,
 		}
 
-		// Pre-compute wildcard prefix.
-		if strings.HasSuffix(r.Match.Path, "/*") {
-			cr.isWild = true
-			cr.prefix = strings.TrimSuffix(r.Match.Path, "*")
-		}
+		// Nil match = catch-all route (matches everything).
+		if r.Match != nil {
+			cr.path = r.Match.Path
+			cr.domain = r.Match.Domain
 
-		// Pre-compute domain segments for glob matching.
-		if r.Match.Domain != "" {
-			cr.domainSegments = strings.Split(strings.ToLower(r.Match.Domain), ".")
-			// Detect trailing "**" glob.
-			if last := len(cr.domainSegments) - 1; last >= 0 && cr.domainSegments[last] == "**" {
-				cr.domainGlob = true
-				cr.domainSegments = cr.domainSegments[:last] // strip "**" from segments
+			// Pre-compute wildcard prefix.
+			if strings.HasSuffix(r.Match.Path, "/*") {
+				cr.isWild = true
+				cr.prefix = strings.TrimSuffix(r.Match.Path, "*")
 			}
-		}
 
-		// Pre-compute method set for O(1) lookup.
-		if len(r.Match.Methods) > 0 {
-			cr.methods = make(map[string]bool, len(r.Match.Methods))
-			for _, m := range r.Match.Methods {
-				cr.methods[strings.ToUpper(m)] = true
+			// Pre-compute domain segments for glob matching.
+			if r.Match.Domain != "" {
+				cr.domainSegments = strings.Split(strings.ToLower(r.Match.Domain), ".")
+				// Detect trailing "**" glob.
+				if last := len(cr.domainSegments) - 1; last >= 0 && cr.domainSegments[last] == "**" {
+					cr.domainGlob = true
+					cr.domainSegments = cr.domainSegments[:last] // strip "**" from segments
+				}
+			}
+
+			// Pre-compute method set for O(1) lookup.
+			if len(r.Match.Methods) > 0 {
+				cr.methods = make(map[string]bool, len(r.Match.Methods))
+				for _, m := range r.Match.Methods {
+					cr.methods[strings.ToUpper(m)] = true
+				}
 			}
 		}
 

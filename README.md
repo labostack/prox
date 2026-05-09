@@ -44,16 +44,17 @@ Three sections: **services** (listeners), **actions** (handlers), **resources** 
 }
 ```
 
-Routes are evaluated in order, first match wins. Match criteria include [domain](docs/configuration.md#domain-matching) patterns (`*.example.com`, `test.*.example.com`) and path patterns (`/health`, `/api/*`). Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli).
+Routes are evaluated in order, first match wins. Match criteria include [domain](docs/configuration.md#domain-matching) patterns (`*.example.com`, `test.*.example.com`) and path patterns (`/health`, `/api/*`). Omit `match` for a [catch-all](docs/configuration.md#routes) route. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli).
 
 ### Action Types
 
 | Type     | Description                                                                                                                |
 | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `proxy`  | Reverse proxy to upstream (`host:port`) with configurable timeout                                                          |
+| `proxy`  | Reverse proxy to upstream (`host:port`) with configurable timeout and [custom headers](docs/configuration.md#proxy--reverse-proxy) |
 | `static` | Fixed response with status, headers, and optional body with [template variables](docs/configuration.md#template-variables) |
 | `serve`  | File server — directory with auto `index.html`, or single file (SPA)                                                       |
 | `pass`   | L4 TCP pass-through — [relay raw TLS to upstream](docs/configuration.md#pass--l4-tcp-pass-through) without termination     |
+| `drop`   | Silently [close the connection](docs/configuration.md#drop--drop-connection) — useful as a catch-all fallback               |
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
 

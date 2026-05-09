@@ -56,6 +56,19 @@
             body_ref: { text: "Hello from {domain}!" },
           },
         },
+
+        // Proxy with custom Host header to upstream.
+        {
+          match: { domain: "*.**" },
+          action: {
+            type: "proxy",
+            upstream: "https://backend.internal",
+            headers: { Host: "public.example.com" },
+          },
+        },
+
+        // Drop all unmatched requests.
+        { action: { type: "drop" } },
       ],
     },
   },
