@@ -11,11 +11,16 @@ import (
 )
 
 func TestServe_DirectoryMode(t *testing.T) {
-	// Create a temp directory with test files.
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>Home</h1>"), 0644)
-	os.MkdirAll(filepath.Join(dir, "css"), 0755)
-	os.WriteFile(filepath.Join(dir, "css", "app.css"), []byte("body{}"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>Home</h1>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "css"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "css", "app.css"), []byte("body{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	act := &config.Action{
 		Type: config.ActionTypeServe,
@@ -55,10 +60,13 @@ func TestServe_DirectoryMode(t *testing.T) {
 }
 
 func TestServe_DirectoryNoListing(t *testing.T) {
-	// Directory without index.html should return 404, not a listing.
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "subdir"), 0755)
-	os.WriteFile(filepath.Join(dir, "subdir", "file.txt"), []byte("data"), 0644)
+	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "subdir", "file.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	act := &config.Action{
 		Type: config.ActionTypeServe,
@@ -82,7 +90,9 @@ func TestServe_DirectoryNoListing(t *testing.T) {
 
 func TestServe_PrefixStripping(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log('hi')"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log('hi')"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	act := &config.Action{
 		Type: config.ActionTypeServe,
@@ -111,7 +121,9 @@ func TestServe_FileMode(t *testing.T) {
 	// Single file mode: any path serves the same file (SPA fallback).
 	dir := t.TempDir()
 	htmlPath := filepath.Join(dir, "index.html")
-	os.WriteFile(htmlPath, []byte("<app/>"), 0644)
+	if err := os.WriteFile(htmlPath, []byte("<app/>"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	act := &config.Action{
 		Type: config.ActionTypeServe,
