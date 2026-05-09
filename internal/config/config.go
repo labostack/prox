@@ -30,9 +30,11 @@ type Service struct {
 }
 
 // Route binds a request matcher to an action — either by name or inline.
+// An optional Balancer distributes requests across multiple targets.
 type Route struct {
-	Match  *Match    `json:"match"`
-	Action ActionRef `json:"action"`
+	Match    *Match          `json:"match"`
+	Balancer *BalancerConfig `json:"balancer,omitempty"`
+	Action   ActionRef       `json:"action"`
 }
 
 // Match defines the criteria for a route to activate.
@@ -45,6 +47,22 @@ type Match struct {
 	Path    string   `json:"path,omitempty"`
 	Domain  string   `json:"domain,omitempty"`
 	Methods []string `json:"methods,omitempty"`
+}
+
+// BalancerType represents the load balancing strategy.
+type BalancerType string
+
+const (
+	BalancerRoundRobin BalancerType = "roundrobin"
+	BalancerRandom     BalancerType = "random"
+	BalancerLeastConn  BalancerType = "leastconn"
+)
+
+// BalancerConfig defines a load balancer for distributing requests across targets.
+// The selected target is available as {target} in the action's upstream field.
+type BalancerConfig struct {
+	Type    BalancerType `json:"type"`
+	Targets []string     `json:"targets"`
 }
 
 // ActionType represents the kind of action to execute.

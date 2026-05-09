@@ -1,6 +1,6 @@
 # prox
 
-Modular reverse proxy with config-driven routing, L4/L7 dispatching, hot reload, and zero dependencies.
+Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatching, hot reload, and zero dependencies.
 
 [![CI](https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/dortanes/prox/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-%E2%89%A5%201.23-brightgreen.svg)](https://golang.org/)
@@ -44,19 +44,43 @@ Three sections: **services** (listeners), **actions** (handlers), **resources** 
 }
 ```
 
-Routes are evaluated in order, first match wins. Match criteria include [domain](docs/configuration.md#domain-matching) patterns (`*.example.com`, `test.*.example.com`) and path patterns (`/health`, `/api/*`). Omit `match` for a [catch-all](docs/configuration.md#routes) route. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli).
+Routes are evaluated in order, first match wins. Match criteria include [domain](docs/configuration.md#domain-matching) patterns (`*.example.com`, `test.*.example.com`) and path patterns (`/health`, `/api/*`). Omit `match` for a [catch-all](docs/configuration.md#routes) route. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli). Routes can be [included from external files](docs/configuration.md#route-includes) to keep configs modular. Routes can use a [balancer](docs/configuration.md#load-balancing) to distribute traffic across multiple upstream targets.
 
 ### Action Types
 
 | Type     | Description                                                                                                                |
 | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `proxy`  | Reverse proxy to upstream (`host:port`) with configurable timeout and [custom headers](docs/configuration.md#proxy--reverse-proxy) |
+| `proxy`  | Reverse proxy with [WebSocket support](docs/configuration.md#websocket-support), [load balancing](docs/configuration.md#load-balancing), configurable timeout and [custom headers](docs/configuration.md#proxy--reverse-proxy) |
 | `static` | Fixed response with status, headers, and optional body with [template variables](docs/configuration.md#template-variables) |
 | `serve`  | File server — directory with auto `index.html`, or single file (SPA)                                                       |
 | `pass`   | L4 TCP pass-through — [relay raw TLS to upstream](docs/configuration.md#pass--l4-tcp-pass-through) without termination     |
 | `drop`   | Silently [close the connection](docs/configuration.md#drop--drop-connection) — useful as a catch-all fallback               |
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
+
+## Load Balancing
+
+Routes can distribute traffic across multiple upstreams. The balancer selects a target per request (L7) or per connection (L4 `pass`), available as `{target}` in the action's `upstream`.
+
+```json5
+{
+  match: { domain: "*.**", path: "/ws" },
+  balancer: {
+    type: "roundrobin",   // or "random", "leastconn"
+    targets: [
+      "10.0.1.1:3505",
+      "10.0.1.2:3505",
+      "10.0.1.3:3505",
+    ],
+  },
+  action: {
+    type: "proxy",
+    upstream: "{target}",
+  },
+}
+```
+
+WebSocket connections through balanced routes are pinned to the selected target for the entire session. See [docs/configuration.md#load-balancing](docs/configuration.md#load-balancing) for details.
 
 ## L4 Dispatching
 

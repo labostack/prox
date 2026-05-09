@@ -115,6 +115,10 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 			}
 		}
 	}
+
+	if route.Balancer != nil {
+		v.validateBalancer(prefix, route)
+	}
 }
 
 // validatePath ensures the path pattern is well-formed.
@@ -265,5 +269,48 @@ func (v *validator) validateServeAction(name string, action *Action) {
 func (v *validator) validatePassAction(name string, action *Action) {
 	if action.Upstream == "" {
 		v.addIssue("action %q (pass): upstream is required", name)
+	}
+}
+
+func (v *validator) validateBalancer(prefix string, route *Route) {
+	bal := route.Balancer
+
+	switch bal.Type {
+	case BalancerRoundRobin, BalancerRandom, BalancerLeastConn:
+		// Valid.
+	case "":
+		v.addIssue("%s: balancer.type is required", prefix)
+	default:
+		v.addIssue("%s: unknown balancer type %q (expected %q, %q, or %q)",
+			prefix, bal.Type, BalancerRoundRobin, BalancerRandom, BalancerLeastConn)
+	}
+
+	if len(bal.Targets) == 0 {
+		v.addIssue("%s: balancer.targets must have at least one entry", prefix)
+	}
+
+	// Check for duplicates.
+	seen := make(map[string]bool, len(bal.Targets))
+	for _, t := range bal.Targets {
+		if t == "" {
+			v.addIssue("%s: balancer.targets contains an empty entry", prefix)
+			continue
+		}
+		if seen[t] {
+			v.addIssue("%s: balancer.targets contains duplicate %q", prefix, t)
+		}
+		seen[t] = true
+	}
+
+	// Validate that the action's upstream references {target}.
+	if route.Action.Name != "" {
+		if act, ok := v.cfg.Actions[route.Action.Name]; ok {
+			if act.Type != ActionTypeProxy && act.Type != ActionTypePass {
+				v.addIssue("%s: balancer is only supported with proxy or pass actions", prefix)
+			}
+			if !strings.Contains(act.Upstream, "{target}") {
+				v.addIssue("%s: action upstream must contain {target} placeholder when using a balancer", prefix)
+			}
+		}
 	}
 }

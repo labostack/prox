@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dortanes/prox/internal/balancer"
 )
 
 const (
@@ -23,7 +25,9 @@ type Route struct {
 	DomainGlob     bool     // true when pattern ends with "**"
 	IsPass         bool     // true for action type "pass"
 	IsDrop         bool     // true for action type "drop"
-	Upstream       string   // dial address for pass routes
+	Upstream       string   // dial address for pass routes (static)
+	UpstreamTpl    string   // upstream template with {target} for balanced pass routes
+	Bal            balancer.Balancer // nil = no balancing
 }
 
 // Dispatcher intercepts raw TCP connections on a listener, peeks the
@@ -128,13 +132,26 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 		}
 
 		if route.IsPass {
+			// Resolve upstream — static or balanced.
+			upstream := route.Upstream
+			var target string
+			if route.Bal != nil && route.UpstreamTpl != "" {
+				target = route.Bal.Next()
+				upstream = strings.ReplaceAll(route.UpstreamTpl, "{target}", target)
+			}
+
 			slog.Debug("l4 pass",
 				"sni", sni,
 				"pattern", route.Domain,
-				"upstream", route.Upstream,
+				"upstream", upstream,
 				"remote", conn.RemoteAddr(),
 			)
-			d.relayPass(conn, buf, route.Upstream)
+			d.relayPass(conn, buf, upstream)
+
+			// Signal the balancer after relay completes.
+			if route.Bal != nil && target != "" {
+				route.Bal.Done(target)
+			}
 			return
 		}
 

@@ -50,8 +50,8 @@ A string value loads the service from an external JSON5 file:
 ```json5
 {
   services: {
-    web: './web.json5',      // load ServiceFragment from file
-    api: './api.json5',
+    web: "./web.json5", // load ServiceFragment from file
+    api: "./api.json5",
   },
 }
 ```
@@ -65,7 +65,7 @@ A string pointing to a directory loads all `.json5` files from it. Each file bec
 ```json5
 {
   services: {
-    _microservices: './services/',
+    _microservices: "./services/",
     //  services/web.json5 → service "web"
     //  services/api.json5 → service "api"
   },
@@ -123,11 +123,11 @@ Routes are evaluated in order — first match wins.
 ```json5
 {
   match: {
-    domain: "*.example.com",       // optional, segment glob
-    path: "/api/*",                // optional if domain set
-    methods: ["GET", "POST"],      // optional, empty = all
+    domain: "*.example.com", // optional, segment glob
+    path: "/api/*", // optional if domain set
+    methods: ["GET", "POST"], // optional, empty = all
   },
-  action: "proxy_to_backend",      // string ref to actions map
+  action: "proxy_to_backend", // string ref to actions map
 }
 ```
 
@@ -146,17 +146,17 @@ Domain patterns use segment-based glob matching:
 - `cdn-*`, `*-prod` — partial wildcards match a label with a fixed prefix/suffix
 - `**` matches **one or more** domain labels (only valid as the last segment)
 
-| Pattern | Matches | Does not match |
-|---|---|---|
-| `example.com` | `example.com` | `sub.example.com` |
-| `*.example.com` | `sub.example.com` | `example.com`, `a.b.example.com` |
-| `*.test.example.com` | `api.test.example.com` | `test.example.com` |
-| `test.*.example.com` | `test.staging.example.com` | `test.example.com` |
-| `*.*.example.com` | `a.b.example.com` | `a.example.com`, `a.b.c.example.com` |
-| `cdn-*.example.com` | `cdn-us.example.com`, `cdn-eu.example.com` | `cdn.example.com`, `web-us.example.com` |
-| `*-prod.example.com` | `api-prod.example.com` | `api-staging.example.com` |
-| `*.storage.**` | `cdn.storage.example.com`, `cdn.storage.a.b.c` | `storage.example.com`, `cdn.storage` |
-| `cdn-*.**` | `cdn-us.example.com`, `cdn-eu.myapp.dev` | `cdn.example.com` |
+| Pattern              | Matches                                        | Does not match                          |
+| -------------------- | ---------------------------------------------- | --------------------------------------- |
+| `example.com`        | `example.com`                                  | `sub.example.com`                       |
+| `*.example.com`      | `sub.example.com`                              | `example.com`, `a.b.example.com`        |
+| `*.test.example.com` | `api.test.example.com`                         | `test.example.com`                      |
+| `test.*.example.com` | `test.staging.example.com`                     | `test.example.com`                      |
+| `*.*.example.com`    | `a.b.example.com`                              | `a.example.com`, `a.b.c.example.com`    |
+| `cdn-*.example.com`  | `cdn-us.example.com`, `cdn-eu.example.com`     | `cdn.example.com`, `web-us.example.com` |
+| `*-prod.example.com` | `api-prod.example.com`                         | `api-staging.example.com`               |
+| `*.storage.**`       | `cdn.storage.example.com`, `cdn.storage.a.b.c` | `storage.example.com`, `cdn.storage`    |
+| `cdn-*.**`           | `cdn-us.example.com`, `cdn-eu.myapp.dev`       | `cdn.example.com`                       |
 
 Domain matching is **case-insensitive** and ports are stripped automatically (`example.com:443` → `example.com`).
 
@@ -168,11 +168,13 @@ Domain patterns are also used for [L4 dispatching](#l4-dispatching-pass-routes) 
   services: {
     gateway: {
       listen: ":443",
-      tls: true, tls_cert: "cert.pem", tls_key: "key.pem",
+      tls: true,
+      tls_cert: "cert.pem",
+      tls_key: "key.pem",
       routes: [
         { match: { domain: "api.example.com", path: "/v1/*" }, action: "api" },
-        { match: { domain: "*.cdn.example.com" },              action: "cdn" },
-        { match: { domain: "*.example.com", path: "/*" },      action: "site" },
+        { match: { domain: "*.cdn.example.com" }, action: "cdn" },
+        { match: { domain: "*.example.com", path: "/*" }, action: "site" },
       ],
     },
   },
@@ -194,16 +196,171 @@ Instead of referencing a named action, you can define one inline:
 }
 ```
 
+### Route includes
+
+Routes can be loaded from external files. Use a string path instead of a route object in the `routes` array — the referenced file's routes are spliced in place, preserving order.
+
+```json5
+{
+  listen: ":443",
+  tls: true,
+  tls_cert: "./certs/",
+  routes: [
+    "./routes/realtime.json5", // routes from file (spliced in order)
+    "./routes/fallback.json5", // another include
+  ],
+}
+```
+
+Route include files support two formats:
+
+**Bare array** — just the routes:
+
+```json5
+// routes/realtime.json5
+[
+  {
+    match: { domain: "*.**", path: "/ws" },
+    action: { type: "proxy", upstream: "localhost:3505" },
+  },
+  {
+    match: { domain: "*.**", path: "/grpc" },
+    action: { type: "proxy", upstream: "localhost:3506" },
+  },
+]
+```
+
+**Object wrapper** — routes inside a `routes` key:
+
+```json5
+// routes/realtime.json5
+{
+  routes: [
+    {
+      match: { domain: "*.**", path: "/ws" },
+      action: { type: "proxy", upstream: "localhost:3505" },
+    },
+  ],
+}
+```
+
+You can mix inline routes and includes freely:
+
+```json5
+{
+  listen: ":443",
+  routes: [
+    "./routes/realtime.json5",
+    { match: { path: "/health" }, action: { type: "static", status: 200 } },
+    "./routes/fallback.json5",
+  ],
+}
+```
+
+Relative paths are resolved from the **directory of the parent config file**. Included files are tracked by the file watcher — editing a route include triggers a hot reload. Circular references are detected and rejected.
+
+## Load Balancing
+
+Routes can distribute requests across multiple upstream targets using a `balancer`. The balancer selects a target per request (L7) or per connection (L4), and the selected address is available as `{target}` in the action's `upstream` field.
+
+```json5
+{
+  match: { domain: "*.**", path: "/ws" },
+  balancer: {
+    type: "roundrobin",
+    targets: ["10.0.1.1:3505", "10.0.1.2:3505", "10.0.1.3:3505"],
+  },
+  action: {
+    type: "proxy",
+    upstream: "{target}",
+  },
+}
+```
+
+### Balancer config
+
+| Field     | Type     | Required | Description                                                      |
+| --------- | -------- | -------- | ---------------------------------------------------------------- |
+| `type`    | string   | ✓        | Balancing strategy: `"roundrobin"`, `"random"`, or `"leastconn"` |
+| `targets` | string[] | ✓        | List of upstream addresses                                       |
+
+### Balancer types
+
+| Type         | Description                                                           |
+| ------------ | --------------------------------------------------------------------- |
+| `roundrobin` | Distributes requests evenly in order across targets. Lock-free, O(1). |
+| `random`     | Selects a target at random each time.                                 |
+| `leastconn`  | Routes to the target with the fewest active connections.              |
+
+### The `{target}` template
+
+The `{target}` placeholder in `upstream` is replaced with the address selected by the balancer. You can use it standalone or embedded in a URL:
+
+```json5
+// Bare target — becomes http://10.0.1.1:3505
+upstream: "{target}"
+
+// Embedded — becomes http://10.0.1.1:3505/api/v1
+upstream: "http://{target}/api/v1"
+```
+
+**Constraints:**
+
+- Balancers are only supported with `proxy` and `pass` action types
+- The action's `upstream` **must** contain `{target}` when a balancer is used
+- Targets must be non-empty and unique within a balancer
+
+### L4 pass-through with balancing
+
+Balancers also work with `pass` routes for L4 TCP load balancing. Each new connection gets a target from the balancer:
+
+```json5
+{
+  match: { domain: "*.cdn.example.com" },
+  balancer: {
+    type: "roundrobin",
+    targets: ["10.0.0.5:443", "10.0.0.6:443"],
+  },
+  action: {
+    type: "pass",
+    upstream: "{target}",
+  },
+}
+```
+
+### WebSocket support
+
+WebSocket connections through a balanced route work transparently — the balancer selects the target before the upgrade handshake, and the entire WebSocket session stays pinned to that target.
+
+### Connection tracking (`leastconn`)
+
+The `leastconn` strategy tracks active connections per target. A connection is counted from the moment the balancer selects it until the request completes (HTTP response sent, WebSocket closed, or TCP relay finished). This works across both L7 proxy routes and L4 pass routes.
+
+```json5
+// Route to the server with the fewest active connections.
+{
+  match: { domain: "*.**", path: "/ws" },
+  balancer: {
+    type: "leastconn",
+    targets: ["10.0.1.1:3505", "10.0.1.2:3505", "10.0.1.3:3505"],
+  },
+  action: {
+    type: "proxy",
+    upstream: "{target}",
+  },
+}
+```
+
 ## Actions
 
 ### `proxy` — Reverse Proxy
 
-| Field      | Type   | Required | Description                           |
-| ---------- | ------ | -------- | ------------------------------------- |
-| `type`     | string | ✓        | `"proxy"`                             |
-| `upstream` | string | ✓        | `"host:port"` or `"http://host:port"` |
-| `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`               |
-| `headers`  | object |          | Extra headers to send to upstream     |
+| Field      | Type   | Required | Description                                          |
+| ---------- | ------ | -------- | ---------------------------------------------------- |
+| `type`     | string | ✓        | `"proxy"`                                            |
+| `upstream` | string | ✓        | `"host:port"`, `"http://host:port"`, or `"{target}"` |
+| `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                              |
+| `headers`  | object |          | Extra headers to send to upstream                    |
 
 Headers are injected into every request forwarded to the upstream. This is useful for setting a custom `Host` header, authentication tokens, or any other headers the upstream requires.
 
@@ -221,29 +378,54 @@ Headers are injected into every request forwarded to the upstream. This is usefu
 }
 ```
 
+#### WebSocket support
+
+WebSocket connections are detected and handled automatically — no configuration needed. When a client sends an `Upgrade: websocket` request, prox:
+
+1. Dials the upstream directly via TCP
+2. Forwards the full HTTP upgrade handshake (including all configured `headers`)
+3. Establishes a bidirectional tunnel after the `101 Switching Protocols` response
+4. Relays frames transparently until either side closes
+
+This works with any WebSocket library or protocol (RFC 6455). The `timeout` setting applies to the initial upstream dial.
+
+```json5
+// WebSocket-capable proxy — no extra config needed.
+{
+  match: { domain: "ws.example.com", path: "/ws/*" },
+  action: {
+    type: "proxy",
+    upstream: "localhost:8080",
+    timeout: "10s",
+  },
+}
+```
+
+If the upstream rejects the upgrade (e.g. returns 403), the rejection response is forwarded to the client as-is.
+
 ### `static` — Static Response
 
-| Field      | Type            | Required | Description                                 |
-| ---------- | --------------- | -------- | ------------------------------------------- |
-| `type`     | string          | ✓        | `"static"`                                  |
-| `status`   | int             | ✓        | HTTP status code                            |
-| `headers`  | object          |          | Response headers                            |
+| Field      | Type            | Required | Description                                                     |
+| ---------- | --------------- | -------- | --------------------------------------------------------------- |
+| `type`     | string          | ✓        | `"static"`                                                      |
+| `status`   | int             | ✓        | HTTP status code                                                |
+| `headers`  | object          |          | Response headers                                                |
 | `body_ref` | string / object |          | Ref to resource or inline `{ text: "..." }` / `{ json: {...} }` |
 
 #### Template variables
 
 Static response bodies can contain `{variable}` placeholders that are interpolated at request time:
 
-| Variable | Description | Example |
-|---|---|---|
-| `{domain}` | Actual request host (no port) | `sub.example.com` |
-| `{domain.pattern}` | Domain pattern from config | `*.example.com` |
-| `{match.domain}` | Captured `*` wildcard value(s) | `sub` |
-| `{match.glob}` | Captured `**` glob suffix | `example.com` |
-| `{path}` | Actual request path | `/api/users` |
-| `{match.path}` | Path pattern from config | `/api/*` |
-| `{method}` | HTTP method | `GET` |
-| `{host}` | Full Host header (with port) | `sub.example.com:443` |
+| Variable           | Description                    | Example               |
+| ------------------ | ------------------------------ | --------------------- |
+| `{domain}`         | Actual request host (no port)  | `sub.example.com`     |
+| `{domain.pattern}` | Domain pattern from config     | `*.example.com`       |
+| `{match.domain}`   | Captured `*` wildcard value(s) | `sub`                 |
+| `{match.glob}`     | Captured `**` glob suffix      | `example.com`         |
+| `{path}`           | Actual request path            | `/api/users`          |
+| `{match.path}`     | Path pattern from config       | `/api/*`              |
+| `{method}`         | HTTP method                    | `GET`                 |
+| `{host}`           | Full Host header (with port)   | `sub.example.com:443` |
 
 For multiple `*` wildcards, captured values are joined with `.` — e.g. pattern `*.*.example.com` matching `a.b.example.com` gives `{match.domain}` = `a.b`. The `**` glob suffix is captured separately into `{match.glob}` — e.g. pattern `*.storage.**` matching `cdn.storage.example.com` gives `{match.domain}` = `cdn` and `{match.glob}` = `example.com`.
 
@@ -311,10 +493,10 @@ Serves files from a directory or a single file.
 
 Relays raw TCP connections to an upstream without TLS termination. The proxy peeks the TLS ClientHello to extract the SNI hostname for routing, then forwards all bytes (including the ClientHello) to the upstream. The upstream handles TLS directly.
 
-| Field      | Type   | Required | Description                           |
-| ---------- | ------ | -------- | ------------------------------------- |
-| `type`     | string | ✓        | `"pass"`                              |
-| `upstream` | string | ✓        | `"host:port"` — TCP dial address      |
+| Field      | Type   | Required | Description                      |
+| ---------- | ------ | -------- | -------------------------------- |
+| `type`     | string | ✓        | `"pass"`                         |
+| `upstream` | string | ✓        | `"host:port"` — TCP dial address |
 
 **Constraints:**
 
@@ -385,9 +567,9 @@ Hot reload updates both L4 and L7 routes atomically.
 
 Named, reusable content blobs referenced by actions via `body_ref`.
 
-| Field  | Type   | Description |
-|--------|--------|-------------|
-| `text` | string | Raw text content |
+| Field  | Type   | Description                                  |
+| ------ | ------ | -------------------------------------------- |
+| `text` | string | Raw text content                             |
 | `json` | any    | JSON value — auto-marshaled to a JSON string |
 
 Use `text` for plain strings, `json` for structured data (avoids manual escaping).
@@ -440,6 +622,10 @@ The validator checks:
 - TLS cert/key are provided when TLS is enabled
 - `pass` routes require a `domain` (SNI matching) and cannot use `path` or `methods`
 - `pass` actions require an `upstream`
+- Balancer type is valid (`roundrobin`, `random`, or `leastconn`)
+- Balancer targets are non-empty and unique
+- Balancer is only used with `proxy` or `pass` actions
+- Action upstream contains `{target}` when a balancer is used
 - No duplicate action/resource names across files
 - No circular file references
 - Reports **all** issues at once

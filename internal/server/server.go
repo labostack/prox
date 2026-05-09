@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dortanes/prox/internal/action"
+	bal "github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/dispatcher"
 	"github.com/dortanes/prox/internal/resource"
@@ -222,7 +223,12 @@ func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatche
 			switch act.Type {
 			case config.ActionTypePass:
 				dr.IsPass = true
-				dr.Upstream = act.Upstream
+				if route.Balancer != nil && strings.Contains(act.Upstream, "{target}") {
+					dr.UpstreamTpl = act.Upstream
+					dr.Bal = buildDispatcherBalancer(route.Balancer)
+				} else {
+					dr.Upstream = act.Upstream
+				}
 			case config.ActionTypeDrop:
 				dr.IsDrop = true
 			}
@@ -252,6 +258,21 @@ func resolveActionType(route *config.Route, cfg *config.Config) config.ActionTyp
 		return act.Type
 	}
 	return ""
+}
+
+// buildDispatcherBalancer creates a balancer for L4 dispatcher routes.
+func buildDispatcherBalancer(cfg *config.BalancerConfig) bal.Balancer {
+	if cfg == nil || len(cfg.Targets) == 0 {
+		return nil
+	}
+	switch cfg.Type {
+	case config.BalancerRandom:
+		return bal.NewRandom(cfg.Targets)
+	case config.BalancerLeastConn:
+		return bal.NewLeastConn(cfg.Targets)
+	default:
+		return bal.NewRoundRobin(cfg.Targets)
+	}
 }
 
 // loadCertificates loads TLS certificate+key pairs.

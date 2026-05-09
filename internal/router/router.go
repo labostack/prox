@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
 )
 
@@ -28,6 +29,17 @@ type MatchResult struct {
 	MatchPath     string // the path pattern, e.g. "/api/*"
 	Domain        string // actual request host (no port)
 	Path          string // actual request path
+	Target        string // selected target from balancer (empty if no balancer)
+	done          func() // release callback for connection-tracking balancers
+}
+
+// Done signals that the request/connection has completed.
+// For connection-tracking balancers (e.g. leastconn), this decrements
+// the active connection counter. Safe to call multiple times or on nil.
+func (m *MatchResult) Done() {
+	if m != nil && m.done != nil {
+		m.done()
+	}
 }
 
 // GetMatchResult retrieves the MatchResult from request context.
@@ -55,6 +67,9 @@ type compiledRoute struct {
 	domain         string   // original pattern (for MatchResult)
 	domainSegments []string // nil = match all hosts
 	domainGlob     bool     // true when pattern ends with "**"
+
+	// Load balancing.
+	bal balancer.Balancer // nil = no balancing
 }
 
 // New compiles a list of config routes into a Router.
@@ -96,10 +111,27 @@ func New(routes []*config.Route) *Router {
 			}
 		}
 
+		cr.bal = buildBalancer(r.Balancer)
+
 		compiled = append(compiled, cr)
 	}
 
 	return &Router{routes: compiled}
+}
+
+// buildBalancer creates a balancer from the route's config.
+func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
+	if cfg == nil || len(cfg.Targets) == 0 {
+		return nil
+	}
+	switch cfg.Type {
+	case config.BalancerRandom:
+		return balancer.NewRandom(cfg.Targets)
+	case config.BalancerLeastConn:
+		return balancer.NewLeastConn(cfg.Targets)
+	default:
+		return balancer.NewRoundRobin(cfg.Targets)
+	}
 }
 
 // Match finds the first route matching the given request.
@@ -128,6 +160,15 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			Domain:        host,
 			Path:          r.URL.Path,
 		}
+
+		// Select a target from the balancer if present.
+		if route.bal != nil {
+			result.Target = route.bal.Next()
+			bal := route.bal
+			target := result.Target
+			result.done = func() { bal.Done(target) }
+		}
+
 		ctx := context.WithValue(r.Context(), matchResultKey, result)
 
 		return r.WithContext(ctx), route.action
