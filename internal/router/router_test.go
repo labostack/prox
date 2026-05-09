@@ -430,3 +430,305 @@ func TestRouter_NoMatchResult(t *testing.T) {
 		t.Errorf("expected nil MatchResult for no match, got %+v", mr)
 	}
 }
+
+// ── Double-star glob tests ─────────────────────────────────────────────
+
+func TestRouter_GlobDomainSuffix(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.storage.**", Path: "/*"},
+			Action: config.ActionRef{Name: "storage"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"files.storage.example.com", "storage"},
+		{"cdn.storage.myapp.dev", "storage"},
+		{"test.storage.a.b.c.dev", "storage"},
+		{"FILES.STORAGE.EXAMPLE.COM", "storage"},
+		{"files.storage.example.com:443", "storage"},
+		{"storage.example.com", ""},   // missing prefix label
+		{"files.cdn.example.com", ""}, // "cdn" != "storage"
+		{"files.storage", ""},         // no suffix after **
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
+func TestRouter_GlobDomainCaptures(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.storage.**", Path: "/*"},
+			Action: config.ActionRef{Name: "storage"},
+		},
+	})
+
+	r, _ := http.NewRequest("GET", "/file.txt", nil)
+	r.Host = "cdn.storage.example.com"
+
+	r, action := rt.Match(r)
+	if action != "storage" {
+		t.Fatalf("expected 'storage', got %q", action)
+	}
+
+	mr := GetMatchResult(r)
+	if mr == nil {
+		t.Fatal("expected MatchResult in context, got nil")
+	}
+
+	// "cdn" from *, "example.com" from **
+	if mr.MatchDomain != "cdn" {
+		t.Errorf("MatchDomain: expected %q, got %q", "cdn", mr.MatchDomain)
+	}
+	if mr.MatchGlob != "example.com" {
+		t.Errorf("MatchGlob: expected %q, got %q", "example.com", mr.MatchGlob)
+	}
+	if mr.DomainPattern != "*.storage.**" {
+		t.Errorf("DomainPattern: expected %q, got %q", "*.storage.**", mr.DomainPattern)
+	}
+	if mr.Domain != "cdn.storage.example.com" {
+		t.Errorf("Domain: expected %q, got %q", "cdn.storage.example.com", mr.Domain)
+	}
+}
+
+func TestRouter_GlobDomainOnly(t *testing.T) {
+	// Pattern with only ** — matches any domain with 1+ labels.
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "catchall.**", Path: "/*"},
+			Action: config.ActionRef{Name: "catch"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"catchall.example.com", "catch"},
+		{"catchall.a.b.c.d", "catch"},
+		{"catchall", ""},          // no suffix
+		{"other.example.com", ""}, // first label doesn't match
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
+func TestRouter_GlobWithMultipleWildcards(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.*.storage.**", Path: "/*"},
+			Action: config.ActionRef{Name: "deep"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"a.b.storage.example.com", "deep"},
+		{"x.y.storage.a.b.c", "deep"},
+		{"a.storage.example.com", ""}, // only one prefix label
+		{"a.b.cdn.example.com", ""},   // "cdn" != "storage"
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
+// ── Partial wildcard tests ─────────────────────────────────────────────
+
+func TestRouter_PartialWildcardPrefix(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "cdn-*.example.com", Path: "/*"},
+			Action: config.ActionRef{Name: "cdn"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"cdn-us.example.com", "cdn"},
+		{"cdn-eu.example.com", "cdn"},
+		{"cdn-asia-pacific.example.com", "cdn"},
+		{"CDN-US.EXAMPLE.COM", "cdn"},
+		{"cdn.example.com", ""},     // no dash suffix
+		{"web-us.example.com", ""},  // wrong prefix
+		{"cdn-us.other.com", ""},    // wrong domain
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
+func TestRouter_PartialWildcardSuffix(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*-prod.example.com", Path: "/*"},
+			Action: config.ActionRef{Name: "prod"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"api-prod.example.com", "prod"},
+		{"web-prod.example.com", "prod"},
+		{"prod.example.com", ""},     // no prefix
+		{"api-staging.example.com", ""}, // wrong suffix
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
+func TestRouter_PartialWildcardCaptures(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "cdn-*.example.com", Path: "/*"},
+			Action: config.ActionRef{Name: "cdn"},
+		},
+	})
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "cdn-us.example.com"
+
+	r, action := rt.Match(r)
+	if action != "cdn" {
+		t.Fatalf("expected 'cdn', got %q", action)
+	}
+
+	mr := GetMatchResult(r)
+	if mr == nil {
+		t.Fatal("expected MatchResult in context, got nil")
+	}
+
+	// Partial wildcard "cdn-*" matching "cdn-us" captures "us"
+	if mr.MatchDomain != "us" {
+		t.Errorf("MatchDomain: expected %q, got %q", "us", mr.MatchDomain)
+	}
+}
+
+func TestRouter_PartialWildcardWithGlob(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "cdn-*.**", Path: "/*"},
+			Action: config.ActionRef{Name: "cdn"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"cdn-us.example.com", "cdn"},
+		{"cdn-eu.myapp.dev", "cdn"},
+		{"cdn-us.a.b.c.d", "cdn"},
+		{"cdn.example.com", ""},  // no dash
+		{"web-us.example.com", ""}, // wrong prefix
+		{"cdn-us", ""},           // no suffix after **
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}
+
+func TestRouter_PartialWildcardWithGlobCaptures(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "cdn-*.**", Path: "/*"},
+			Action: config.ActionRef{Name: "cdn"},
+		},
+	})
+
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "cdn-us.example.com"
+
+	r, action := rt.Match(r)
+	if action != "cdn" {
+		t.Fatalf("expected 'cdn', got %q", action)
+	}
+
+	mr := GetMatchResult(r)
+	if mr == nil {
+		t.Fatal("expected MatchResult in context, got nil")
+	}
+
+	if mr.MatchDomain != "us" {
+		t.Errorf("MatchDomain: expected %q, got %q", "us", mr.MatchDomain)
+	}
+	if mr.MatchGlob != "example.com" {
+		t.Errorf("MatchGlob: expected %q, got %q", "example.com", mr.MatchGlob)
+	}
+}
+
+func TestRouter_PartialWildcardInfix(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "app-*-v2.example.com", Path: "/*"},
+			Action: config.ActionRef{Name: "v2"},
+		},
+	})
+
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"app-api-v2.example.com", "v2"},
+		{"app-web-v2.example.com", "v2"},
+		{"app-v2.example.com", ""},       // nothing between prefix and suffix
+		{"app-api-v3.example.com", ""},    // wrong suffix
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Host = tc.host
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("host %q: expected %q, got %q", tc.host, tc.want, got)
+		}
+	}
+}

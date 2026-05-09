@@ -135,7 +135,11 @@ At least one of `domain` or `path` must be specified.
 
 ### Domain matching
 
-Domain patterns use segment-based glob matching. Each `*` matches **exactly one** domain label (like wildcard SSL certificates).
+Domain patterns use segment-based glob matching:
+
+- `*` matches **exactly one** domain label (like wildcard SSL certificates)
+- `cdn-*`, `*-prod` — partial wildcards match a label with a fixed prefix/suffix
+- `**` matches **one or more** domain labels (only valid as the last segment)
 
 | Pattern | Matches | Does not match |
 |---|---|---|
@@ -144,6 +148,10 @@ Domain patterns use segment-based glob matching. Each `*` matches **exactly one*
 | `*.test.example.com` | `api.test.example.com` | `test.example.com` |
 | `test.*.example.com` | `test.staging.example.com` | `test.example.com` |
 | `*.*.example.com` | `a.b.example.com` | `a.example.com`, `a.b.c.example.com` |
+| `cdn-*.example.com` | `cdn-us.example.com`, `cdn-eu.example.com` | `cdn.example.com`, `web-us.example.com` |
+| `*-prod.example.com` | `api-prod.example.com` | `api-staging.example.com` |
+| `*.storage.**` | `cdn.storage.example.com`, `cdn.storage.a.b.c` | `storage.example.com`, `cdn.storage` |
+| `cdn-*.**` | `cdn-us.example.com`, `cdn-eu.myapp.dev` | `cdn.example.com` |
 
 Domain matching is **case-insensitive** and ports are stripped automatically (`example.com:443` → `example.com`).
 
@@ -208,13 +216,14 @@ Static response bodies can contain `{variable}` placeholders that are interpolat
 |---|---|---|
 | `{domain}` | Actual request host (no port) | `sub.example.com` |
 | `{domain.pattern}` | Domain pattern from config | `*.example.com` |
-| `{match.domain}` | Captured wildcard value(s) | `sub` |
+| `{match.domain}` | Captured `*` wildcard value(s) | `sub` |
+| `{match.glob}` | Captured `**` glob suffix | `example.com` |
 | `{path}` | Actual request path | `/api/users` |
 | `{match.path}` | Path pattern from config | `/api/*` |
 | `{method}` | HTTP method | `GET` |
 | `{host}` | Full Host header (with port) | `sub.example.com:443` |
 
-For multiple wildcards, captured values are joined with `.` — e.g. pattern `*.*.example.com` matching `a.b.example.com` gives `{match.domain}` = `a.b`.
+For multiple `*` wildcards, captured values are joined with `.` — e.g. pattern `*.*.example.com` matching `a.b.example.com` gives `{match.domain}` = `a.b`. The `**` glob suffix is captured separately into `{match.glob}` — e.g. pattern `*.storage.**` matching `cdn.storage.example.com` gives `{match.domain}` = `cdn` and `{match.glob}` = `example.com`.
 
 ```json5
 {
@@ -386,7 +395,7 @@ The validator checks:
 - Required fields are present
 - HTTP methods are valid
 - Path patterns are well-formed
-- Domain patterns are well-formed (no partial wildcards, at least 2 segments)
+- Domain patterns are well-formed (at most one `*` per segment, at least 2 segments, `**` only at end)
 - At least one of `path` or `domain` in each route
 - TLS cert/key are provided when TLS is enabled
 - `pass` routes require a `domain` (SNI matching) and cannot use `path` or `methods`

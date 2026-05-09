@@ -20,6 +20,7 @@ const (
 type Route struct {
 	Domain         string   // original pattern (e.g. "*.cdn.example.com")
 	DomainSegments []string // split + lowered segments for glob matching
+	DomainGlob     bool     // true when pattern ends with "**"
 	IsPass         bool     // true for action type "pass"
 	Upstream       string   // dial address for pass routes
 }
@@ -111,7 +112,7 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 	// Walk routes in config order — first domain match wins.
 	routes := *d.routes.Load()
 	for _, route := range routes {
-		if !matchDomain(route.DomainSegments, sniLower) {
+		if !matchDomain(route.DomainSegments, route.DomainGlob, sniLower) {
 			continue
 		}
 
@@ -173,26 +174,59 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 }
 
 // matchDomain checks if host matches the pattern segments.
-// Each "*" matches exactly one domain label.
-func matchDomain(patternSegments []string, host string) bool {
-	if len(patternSegments) == 0 {
+// Each "*" matches exactly one domain label (full or partial like "cdn-*").
+// When glob is true, the pattern had a trailing "**" (already stripped)
+// and matches one or more remaining labels.
+func matchDomain(patternSegments []string, glob bool, host string) bool {
+	if len(patternSegments) == 0 && !glob {
 		return true // nil pattern matches everything
 	}
 
 	hostSegments := strings.Split(host, ".")
+
+	if glob {
+		// Host must have more labels than the prefix.
+		if len(hostSegments) <= len(patternSegments) {
+			return false
+		}
+		for i, pat := range patternSegments {
+			if !matchSegment(pat, hostSegments[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
 	if len(hostSegments) != len(patternSegments) {
 		return false
 	}
 
 	for i, pat := range patternSegments {
-		if pat == "*" {
-			continue
-		}
-		if hostSegments[i] != pat {
+		if !matchSegment(pat, hostSegments[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// matchSegment checks if a host segment matches a pattern segment.
+// Full wildcard "*" matches any segment. Partial wildcards like "cdn-*"
+// or "*-prod" match segments with the given prefix/suffix.
+func matchSegment(pat, seg string) bool {
+	if pat == "*" {
+		return true
+	}
+	starIdx := strings.Index(pat, "*")
+	if starIdx == -1 {
+		return pat == seg
+	}
+	// Partial wildcard: split around "*" into prefix and suffix.
+	prefix := pat[:starIdx]
+	suffix := pat[starIdx+1:]
+	if len(seg) < len(prefix)+len(suffix) {
+		return false
+	}
+	return strings.HasPrefix(seg, prefix) && strings.HasSuffix(seg, suffix)
 }
 
 // --- prefixConn: replays buffered bytes before reading from the real conn ---

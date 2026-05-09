@@ -23,7 +23,8 @@ var matchResultKey = ctxKey{}
 type MatchResult struct {
 	Action        string // resolved action name
 	DomainPattern string // the pattern from config, e.g. "*.myapp.dev"
-	MatchDomain   string // captured wildcard value(s), e.g. "sub" for *.myapp.dev
+	MatchDomain   string // captured "*" wildcard value(s), e.g. "sub" for *.myapp.dev
+	MatchGlob     string // captured "**" glob suffix, e.g. "example.com" for *.storage.**
 	MatchPath     string // the path pattern, e.g. "/api/*"
 	Domain        string // actual request host (no port)
 	Path          string // actual request path
@@ -50,9 +51,10 @@ type compiledRoute struct {
 
 	// Domain matching — segment-based glob.
 	// Each "*" matches exactly one domain label.
-	// Examples: "*.myapp.dev", "test.*.myapp.dev", "*.*.myapp.dev"
+	// "**" matches one or more labels (only valid as last segment).
 	domain         string   // original pattern (for MatchResult)
 	domainSegments []string // nil = match all hosts
+	domainGlob     bool     // true when pattern ends with "**"
 }
 
 // New compiles a list of config routes into a Router.
@@ -75,6 +77,11 @@ func New(routes []*config.Route) *Router {
 		// Pre-compute domain segments for glob matching.
 		if r.Match.Domain != "" {
 			cr.domainSegments = strings.Split(strings.ToLower(r.Match.Domain), ".")
+			// Detect trailing "**" glob.
+			if last := len(cr.domainSegments) - 1; last >= 0 && cr.domainSegments[last] == "**" {
+				cr.domainGlob = true
+				cr.domainSegments = cr.domainSegments[:last] // strip "**" from segments
+			}
 		}
 
 		// Pre-compute method set for O(1) lookup.
@@ -97,7 +104,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	host := stripPort(r.Host)
 
 	for _, route := range rt.routes {
-		ok, captures := route.matchDomain(host)
+		ok, captures, globTail := route.matchDomain(host)
 		if !ok {
 			continue
 		}
@@ -112,6 +119,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			Action:        route.action,
 			DomainPattern: route.domain,
 			MatchDomain:   strings.Join(captures, "."),
+			MatchGlob:     globTail,
 			MatchPath:     route.path,
 			Domain:        host,
 			Path:          r.URL.Path,
@@ -145,32 +153,80 @@ func (cr *compiledRoute) matchMethod(method string) bool {
 }
 
 // matchDomain checks if the request host matches this route's domain pattern.
-// Returns (matched, captures) where captures are the values matched by "*" segments.
-// nil domainSegments matches all hosts (returns true, nil).
-func (cr *compiledRoute) matchDomain(host string) (bool, []string) {
+// Returns (matched, captures, globTail):
+//   - captures: values matched by "*" segments (full or partial)
+//   - globTail: the suffix matched by "**" (empty when no glob)
+//
+// nil domainSegments matches all hosts (returns true, nil, "").
+func (cr *compiledRoute) matchDomain(host string) (bool, []string, string) {
 	if cr.domainSegments == nil {
-		return true, nil
+		return true, nil, ""
 	}
 
 	hostSegments := strings.Split(strings.ToLower(host), ".")
 
-	// Segment count must match exactly.
+	if cr.domainGlob {
+		// "**" was stripped — remaining segments are the prefix.
+		// Host must have at least prefix + 1 label for the glob.
+		if len(hostSegments) <= len(cr.domainSegments) {
+			return false, nil, ""
+		}
+		var captures []string
+		for i, pat := range cr.domainSegments {
+			ok, cap := matchSegment(pat, hostSegments[i])
+			if !ok {
+				return false, nil, ""
+			}
+			if cap != "" {
+				captures = append(captures, cap)
+			}
+		}
+		// The trailing labels matched by "**" go into globTail.
+		tail := strings.Join(hostSegments[len(cr.domainSegments):], ".")
+		return true, captures, tail
+	}
+
+	// Exact segment count match.
 	if len(hostSegments) != len(cr.domainSegments) {
-		return false, nil
+		return false, nil, ""
 	}
 
 	var captures []string
 	for i, pat := range cr.domainSegments {
-		if pat == "*" {
-			captures = append(captures, hostSegments[i])
-			continue
+		ok, cap := matchSegment(pat, hostSegments[i])
+		if !ok {
+			return false, nil, ""
 		}
-		if hostSegments[i] != pat {
-			return false, nil
+		if cap != "" {
+			captures = append(captures, cap)
 		}
 	}
 
-	return true, captures
+	return true, captures, ""
+}
+
+// matchSegment checks if a host segment matches a pattern segment.
+// Returns (matched, capture). Full wildcard "*" captures the entire segment.
+// Partial wildcards like "cdn-*" or "*-prod" capture the variable portion.
+// Literals return an empty capture.
+func matchSegment(pat, seg string) (bool, string) {
+	if pat == "*" {
+		return true, seg
+	}
+	starIdx := strings.Index(pat, "*")
+	if starIdx == -1 {
+		return pat == seg, ""
+	}
+	// Partial wildcard: split around "*" into prefix and suffix.
+	prefix := pat[:starIdx]
+	suffix := pat[starIdx+1:]
+	if len(seg) < len(prefix)+len(suffix) {
+		return false, ""
+	}
+	if !strings.HasPrefix(seg, prefix) || !strings.HasSuffix(seg, suffix) {
+		return false, ""
+	}
+	return true, seg[len(prefix) : len(seg)-len(suffix)]
 }
 
 // stripPort removes the port from a host string.

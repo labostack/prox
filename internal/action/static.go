@@ -66,6 +66,7 @@ func (s *Static) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out = strings.ReplaceAll(out, "{domain}", mr.Domain)
 		out = strings.ReplaceAll(out, "{domain.pattern}", mr.DomainPattern)
 		out = strings.ReplaceAll(out, "{match.domain}", mr.MatchDomain)
+		out = strings.ReplaceAll(out, "{match.glob}", mr.MatchGlob)
 		out = strings.ReplaceAll(out, "{path}", mr.Path)
 		out = strings.ReplaceAll(out, "{match.path}", mr.MatchPath)
 	}

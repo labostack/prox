@@ -82,29 +82,46 @@ func TestMatchDomain(t *testing.T) {
 		pattern  string
 		host     string
 		segments []string
+		glob     bool
 		want     bool
 	}{
-		{"*.cdn.example.com", "us.cdn.example.com", []string{"*", "cdn", "example", "com"}, true},
-		{"*.cdn.example.com", "cdn.example.com", []string{"*", "cdn", "example", "com"}, false},
-		{"*.cdn.example.com", "a.b.cdn.example.com", []string{"*", "cdn", "example", "com"}, false},
-		{"api.*.example.com", "api.staging.example.com", []string{"api", "*", "example", "com"}, true},
-		{"api.*.example.com", "api.example.com", []string{"api", "*", "example", "com"}, false},
-		{"exact.example.com", "exact.example.com", []string{"exact", "example", "com"}, true},
-		{"exact.example.com", "other.example.com", []string{"exact", "example", "com"}, false},
+		{"*.cdn.example.com", "us.cdn.example.com", []string{"*", "cdn", "example", "com"}, false, true},
+		{"*.cdn.example.com", "cdn.example.com", []string{"*", "cdn", "example", "com"}, false, false},
+		{"*.cdn.example.com", "a.b.cdn.example.com", []string{"*", "cdn", "example", "com"}, false, false},
+		{"api.*.example.com", "api.staging.example.com", []string{"api", "*", "example", "com"}, false, true},
+		{"api.*.example.com", "api.example.com", []string{"api", "*", "example", "com"}, false, false},
+		{"exact.example.com", "exact.example.com", []string{"exact", "example", "com"}, false, true},
+		{"exact.example.com", "other.example.com", []string{"exact", "example", "com"}, false, false},
+		// ** glob patterns (segments have ** stripped, glob=true)
+		{"*.storage.**", "cdn.storage.example.com", []string{"*", "storage"}, true, true},
+		{"*.storage.**", "cdn.storage.a.b.c", []string{"*", "storage"}, true, true},
+		{"*.storage.**", "storage.example.com", []string{"*", "storage"}, true, false},  // missing prefix
+		{"*.storage.**", "cdn.storage", []string{"*", "storage"}, true, false},           // no suffix
+		{"*.storage.**", "cdn.other.example.com", []string{"*", "storage"}, true, false}, // "other" != "storage"
+		// Partial wildcards
+		{"cdn-*.example.com", "cdn-us.example.com", []string{"cdn-*", "example", "com"}, false, true},
+		{"cdn-*.example.com", "cdn.example.com", []string{"cdn-*", "example", "com"}, false, false},   // no dash
+		{"cdn-*.example.com", "web-us.example.com", []string{"cdn-*", "example", "com"}, false, false}, // wrong prefix
+		{"*-prod.example.com", "api-prod.example.com", []string{"*-prod", "example", "com"}, false, true},
+		{"*-prod.example.com", "api-staging.example.com", []string{"*-prod", "example", "com"}, false, false},
+		// Partial wildcard + glob
+		{"cdn-*.**", "cdn-us.example.com", []string{"cdn-*"}, true, true},
+		{"cdn-*.**", "cdn-eu.a.b.c", []string{"cdn-*"}, true, true},
+		{"cdn-*.**", "cdn.example.com", []string{"cdn-*"}, true, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"→"+tt.host, func(t *testing.T) {
-			got := matchDomain(tt.segments, tt.host)
+			got := matchDomain(tt.segments, tt.glob, tt.host)
 			if got != tt.want {
-				t.Errorf("matchDomain(%v, %q) = %v, want %v", tt.segments, tt.host, got, tt.want)
+				t.Errorf("matchDomain(%v, %v, %q) = %v, want %v", tt.segments, tt.glob, tt.host, got, tt.want)
 			}
 		})
 	}
 }
 
 func TestMatchDomain_NilPattern(t *testing.T) {
-	if !matchDomain(nil, "anything.com") {
+	if !matchDomain(nil, false, "anything.com") {
 		t.Error("nil pattern should match everything")
 	}
 }

@@ -210,6 +210,12 @@ func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatche
 			DomainSegments: strings.Split(strings.ToLower(route.Match.Domain), "."),
 		}
 
+		// Detect trailing "**" glob.
+		if last := len(dr.DomainSegments) - 1; last >= 0 && dr.DomainSegments[last] == "**" {
+			dr.DomainGlob = true
+			dr.DomainSegments = dr.DomainSegments[:last]
+		}
+
 		if act := resolveAction(route, cfg); act != nil && act.Type == config.ActionTypePass {
 			dr.IsPass = true
 			dr.Upstream = act.Upstream

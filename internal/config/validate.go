@@ -136,7 +136,8 @@ func (v *validator) validatePath(prefix, path string) {
 }
 
 // validateDomain ensures the domain pattern is well-formed.
-// Supports "*" as a wildcard in any segment position.
+// Supports "*" as a single-label wildcard and "**" as a multi-label
+// glob (only valid as the last segment).
 func (v *validator) validateDomain(prefix, domain string) {
 	if domain == "" {
 		return
@@ -148,15 +149,23 @@ func (v *validator) validateDomain(prefix, domain string) {
 		return
 	}
 
-	for _, seg := range segments {
+	for i, seg := range segments {
 		if seg == "" {
 			v.addIssue("%s: domain has an empty segment (double dot or leading/trailing dot)", prefix)
 			return
 		}
-		// A segment is either a full wildcard "*" or a literal label.
-		// Partial wildcards like "te*st" are not allowed.
-		if seg != "*" && strings.Contains(seg, "*") {
-			v.addIssue("%s: partial wildcard %q is not allowed — use a full \"*\" segment", prefix, seg)
+		// "**" is only valid as the very last segment.
+		if seg == "**" {
+			if i != len(segments)-1 {
+				v.addIssue("%s: \"**\" glob is only allowed as the last domain segment", prefix)
+			}
+			continue
+		}
+		// A segment may contain at most one "*" for wildcard matching.
+		// Full wildcard "*" matches the entire label.
+		// Partial wildcards like "cdn-*" or "*-prod" match with prefix/suffix.
+		if strings.Count(seg, "*") > 1 {
+			v.addIssue("%s: segment %q has multiple wildcards — only one \"*\" per segment is allowed", prefix, seg)
 		}
 	}
 }
