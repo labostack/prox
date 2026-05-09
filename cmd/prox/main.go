@@ -59,9 +59,9 @@ Commands:
   help       Show this help
 
 Flags (serve, validate):
-  -config string      Path to configuration file (default "config.json5")
+  -config string      Path to config file or directory (default "config.json5")
   -log-level string   Log level: debug, info, warn, error (default "info")
-  -watch              Watch config file for changes and auto-reload (default true)
+  -watch              Watch config files for changes and auto-reload (default true)
 
 `)
 }
@@ -69,16 +69,16 @@ Flags (serve, validate):
 // runServe starts the proxy with the given config.
 func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	configPath := fs.String("config", "config.json5", "path to configuration file")
+	configPath := fs.String("config", "config.json5", "path to config file or directory")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
-	watchEnabled := fs.Bool("watch", true, "watch config file for changes and auto-reload")
+	watchEnabled := fs.Bool("watch", true, "watch config files for changes and auto-reload")
 	_ = fs.Parse(args)
 
 	initLogger(*logLevel)
 
 	slog.Info("loading configuration", "path", *configPath)
 
-	cfg, err := config.LoadFile(*configPath)
+	result, err := config.LoadFile(*configPath)
 	if err != nil {
 		slog.Error("configuration error", "error", err)
 		if config.IsValidationError(err) {
@@ -87,10 +87,13 @@ func runServe(args []string) int {
 		return 1
 	}
 
+	cfg := result.Config
+
 	slog.Info("configuration loaded",
 		"services", len(cfg.Services),
 		"actions", len(cfg.Actions),
 		"resources", len(cfg.Resources),
+		"files", len(result.Paths),
 	)
 
 	group, err := server.Build(cfg)
@@ -117,10 +120,10 @@ func runServe(args []string) int {
 	}()
 
 	if *watchEnabled {
-		go watcher.Watch(ctx, *configPath, func() {
+		go watcher.Watch(ctx, result.Paths, func() {
 			triggerReload(reloadCh)
 		})
-		slog.Info("config file watcher enabled", "path", *configPath)
+		slog.Info("config file watcher enabled", "files", len(result.Paths))
 	}
 
 	go func() {
@@ -154,7 +157,7 @@ func triggerReload(ch chan struct{}) {
 func performReload(path string, group *server.Group) {
 	slog.Info("reloading configuration", "path", path)
 
-	cfg, err := config.LoadFile(path)
+	result, err := config.LoadFile(path)
 	if err != nil {
 		slog.Error("reload failed: invalid config, keeping current",
 			"path", path,
@@ -163,7 +166,7 @@ func performReload(path string, group *server.Group) {
 		return
 	}
 
-	if err := group.Reload(cfg); err != nil {
+	if err := group.Reload(result.Config); err != nil {
 		slog.Error("reload failed: could not apply config, keeping current",
 			"error", err,
 		)
@@ -174,16 +177,17 @@ func performReload(path string, group *server.Group) {
 // runValidate checks the config and exits with 0 (valid) or 1 (invalid).
 func runValidate(args []string) int {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
-	configPath := fs.String("config", "config.json5", "path to configuration file")
+	configPath := fs.String("config", "config.json5", "path to config file or directory")
 	_ = fs.Parse(args)
 
-	_, err := config.LoadFile(*configPath)
+	result, err := config.LoadFile(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %s\n", err)
 		return 1
 	}
 
-	fmt.Fprintf(os.Stdout, "✅ configuration is valid: %s\n", *configPath)
+	fmt.Fprintf(os.Stdout, "✅ configuration is valid: %s (%d file(s))\n",
+		*configPath, len(result.Paths))
 	return 0
 }
 

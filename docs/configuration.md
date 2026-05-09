@@ -25,7 +25,9 @@ Every config has three sections:
 
 ## Services
 
-A service is a listener with routing rules.
+A service is a listener with routing rules. Services can be defined inline or loaded from external files.
+
+### Inline
 
 ```json5
 {
@@ -40,6 +42,79 @@ A service is a listener with routing rules.
   },
 }
 ```
+
+### File reference
+
+A string value loads the service from an external JSON5 file:
+
+```json5
+{
+  services: {
+    web: './web.json5',      // load ServiceFragment from file
+    api: './api.json5',
+  },
+}
+```
+
+Relative paths are resolved from the **directory of the parent config file**.
+
+### Directory reference
+
+A string pointing to a directory loads all `.json5` files from it. Each file becomes a service named after its filename (without extension):
+
+```json5
+{
+  services: {
+    _microservices: './services/',
+    //  services/web.json5 → service "web"
+    //  services/api.json5 → service "api"
+  },
+}
+```
+
+Non-`.json5` files and subdirectories are ignored.
+
+### Directory mode (CLI)
+
+You can also pass a directory directly to `-config`:
+
+```bash
+prox serve -config ./config/
+```
+
+Every `.json5` file in the directory is treated as a service fragment. No root config file is needed.
+
+## Service Fragments
+
+A service fragment is the file format for external service definitions. It's a service definition with optional local `actions` and `resources`:
+
+```json5
+// web.json5
+{
+  listen: ":8080",
+  routes: [
+    { match: { path: "/health" }, action: "health" },
+    { match: { path: "/*" }, action: "frontend" },
+  ],
+
+  // Local actions — merged into the global pool.
+  actions: {
+    frontend: { type: "serve", root: "./public" },
+  },
+
+  // Local resources — merged into the global pool.
+  resources: {
+    banner: { text: "Welcome!" },
+  },
+}
+```
+
+**Merge rules:**
+
+- Actions and resources from fragments are merged into the global pool alongside definitions from the root config.
+- Duplicate names across any files are a **validation error** — rename to avoid collisions.
+- Global actions from the root config are accessible by all services (e.g. a shared `health` action).
+- Fragments cannot reference other files — only one level of nesting.
 
 ## Routes
 
@@ -178,6 +253,7 @@ Validate before deploying:
 
 ```bash
 prox validate -config config.json5
+prox validate -config ./config/      # works with directories too
 ```
 
 The validator checks:
@@ -188,4 +264,6 @@ The validator checks:
 - HTTP methods are valid
 - Path patterns are well-formed
 - TLS cert/key are provided when TLS is enabled
+- No duplicate action/resource names across files
+- No circular file references
 - Reports **all** issues at once

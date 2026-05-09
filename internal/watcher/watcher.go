@@ -1,4 +1,4 @@
-// Package watcher monitors a file for changes using stat-based polling.
+// Package watcher monitors config files for changes using stat-based polling.
 package watcher
 
 import (
@@ -10,17 +10,29 @@ import (
 
 const pollInterval = 1 * time.Second
 
-// Watch monitors a file for modifications and calls onChange when the file
-// changes. It compares mtime + size on each tick. Blocks until ctx is cancelled.
-func Watch(ctx context.Context, path string, onChange func()) {
-	prev, err := snapshot(path)
-	if err != nil {
-		slog.Warn("file watcher: cannot stat file, watching disabled",
-			"path", path,
-			"error", err,
-		)
+// Watch monitors one or more files for modifications and calls onChange when
+// any file changes. It compares mtime + size on each tick. Blocks until ctx is cancelled.
+func Watch(ctx context.Context, paths []string, onChange func()) {
+	snapshots := make(map[string]fileSnapshot, len(paths))
+
+	for _, p := range paths {
+		s, err := snapshot(p)
+		if err != nil {
+			slog.Warn("file watcher: cannot stat file, skipping",
+				"path", p,
+				"error", err,
+			)
+			continue
+		}
+		snapshots[p] = s
+	}
+
+	if len(snapshots) == 0 {
+		slog.Warn("file watcher: no files to watch, watcher disabled")
 		return
 	}
+
+	slog.Info("file watcher started", "files", len(snapshots))
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -30,16 +42,19 @@ func Watch(ctx context.Context, path string, onChange func()) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cur, err := snapshot(path)
-			if err != nil {
-				slog.Debug("file watcher: stat error", "error", err)
-				continue
-			}
+			for p, prev := range snapshots {
+				cur, err := snapshot(p)
+				if err != nil {
+					slog.Debug("file watcher: stat error", "path", p, "error", err)
+					continue
+				}
 
-			if cur != prev {
-				slog.Info("config file changed, triggering reload", "path", path)
-				onChange()
-				prev = cur
+				if cur != prev {
+					slog.Info("config file changed, triggering reload", "path", p)
+					snapshots[p] = cur
+					onChange()
+					break // one reload per tick is enough
+				}
 			}
 		}
 	}

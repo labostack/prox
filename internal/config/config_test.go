@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -490,5 +492,343 @@ func TestLoad_JSON5Features(t *testing.T) {
 	_, err := Load([]byte(raw))
 	if err != nil {
 		t.Fatalf("JSON5 features should be supported, got: %v", err)
+	}
+}
+
+// --- Nested config file tests ---
+
+// helper: create a temp dir with files, return dir path.
+func writeTestFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestLoadFile_NestedServiceRef(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"main.json5": `{
+			services: {
+				web: "./web.json5",
+			},
+			actions: {
+				health: { type: "static", status: 200 },
+			},
+		}`,
+		"web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/health" }, action: "health" },
+				{ match: { path: "/*" }, action: "frontend" },
+			],
+			actions: {
+				frontend: { type: "serve", root: "./public" },
+			},
+		}`,
+	})
+
+	result, err := LoadFile(filepath.Join(dir, "main.json5"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	cfg := result.Config
+
+	// Service should be resolved.
+	web, ok := cfg.Services["web"]
+	if !ok {
+		t.Fatal("expected 'web' service")
+	}
+	if web.Listen != ":8080" {
+		t.Errorf("expected listen :8080, got %s", web.Listen)
+	}
+	if len(web.Routes) != 2 {
+		t.Errorf("expected 2 routes, got %d", len(web.Routes))
+	}
+
+	// Fragment actions should be merged.
+	if _, ok := cfg.Actions["frontend"]; !ok {
+		t.Error("expected 'frontend' action from fragment")
+	}
+	if _, ok := cfg.Actions["health"]; !ok {
+		t.Error("expected 'health' action from root")
+	}
+
+	// Paths should include both files.
+	if len(result.Paths) != 2 {
+		t.Errorf("expected 2 paths, got %d: %v", len(result.Paths), result.Paths)
+	}
+}
+
+func TestLoadFile_NestedWithResources(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"main.json5": `{
+			services: {
+				web: "./web.json5",
+			},
+		}`,
+		"web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/" }, action: "home" },
+			],
+			actions: {
+				home: { type: "static", status: 200, body_ref: "page" },
+			},
+			resources: {
+				page: { text: "Hello from fragment!" },
+			},
+		}`,
+	})
+
+	result, err := LoadFile(filepath.Join(dir, "main.json5"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	res, ok := result.Config.Resources["page"]
+	if !ok {
+		t.Fatal("expected 'page' resource from fragment")
+	}
+	if res.Text != "Hello from fragment!" {
+		t.Errorf("expected fragment text, got %q", res.Text)
+	}
+}
+
+func TestLoadFile_DuplicateAction(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"main.json5": `{
+			services: {
+				web: "./web.json5",
+			},
+			actions: {
+				health: { type: "static", status: 200 },
+			},
+		}`,
+		"web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/" }, action: "health" },
+			],
+			actions: {
+				health: { type: "static", status: 204 },
+			},
+		}`,
+	})
+
+	_, err := LoadFile(filepath.Join(dir, "main.json5"))
+	if err == nil {
+		t.Fatal("expected error for duplicate action")
+	}
+	if !strings.Contains(err.Error(), "duplicate action") {
+		t.Errorf("error should mention duplicate, got: %v", err)
+	}
+}
+
+func TestLoadFile_DirectoryMode(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/*" }, action: "frontend" },
+			],
+			actions: {
+				frontend: { type: "serve", root: "./public" },
+			},
+		}`,
+		"api.json5": `{
+			listen: ":9090",
+			routes: [
+				{ match: { path: "/*" }, action: "backend" },
+			],
+			actions: {
+				backend: { type: "proxy", upstream: "localhost:3000" },
+			},
+		}`,
+	})
+
+	result, err := LoadFile(dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	cfg := result.Config
+
+	if len(cfg.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(cfg.Services))
+	}
+
+	if _, ok := cfg.Services["web"]; !ok {
+		t.Error("expected 'web' service (from web.json5)")
+	}
+	if _, ok := cfg.Services["api"]; !ok {
+		t.Error("expected 'api' service (from api.json5)")
+	}
+
+	// Actions from both fragments should be merged.
+	if _, ok := cfg.Actions["frontend"]; !ok {
+		t.Error("expected 'frontend' action")
+	}
+	if _, ok := cfg.Actions["backend"]; !ok {
+		t.Error("expected 'backend' action")
+	}
+}
+
+func TestLoadFile_DirectorySkipsNonJSON5(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/*" }, action: "a" },
+			],
+			actions: {
+				a: { type: "proxy", upstream: "localhost:80" },
+			},
+		}`,
+		"readme.txt": "this should be ignored",
+		".hidden":    "this too",
+	})
+
+	result, err := LoadFile(dir)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(result.Config.Services) != 1 {
+		t.Errorf("expected 1 service, got %d", len(result.Config.Services))
+	}
+}
+
+func TestLoadFile_NestedDirRef(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"main.json5": `{
+			services: {
+				_dir: "./services/",
+			},
+			actions: {
+				shared_health: { type: "static", status: 200 },
+			},
+		}`,
+		"services/web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/*" }, action: "frontend" },
+			],
+			actions: {
+				frontend: { type: "serve", root: "./public" },
+			},
+		}`,
+		"services/api.json5": `{
+			listen: ":9090",
+			routes: [
+				{ match: { path: "/*" }, action: "backend" },
+			],
+			actions: {
+				backend: { type: "proxy", upstream: "localhost:3000" },
+			},
+		}`,
+	})
+
+	result, err := LoadFile(filepath.Join(dir, "main.json5"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	cfg := result.Config
+
+	// Directory services should be loaded with filename-based names.
+	if _, ok := cfg.Services["web"]; !ok {
+		t.Error("expected 'web' service from services/web.json5")
+	}
+	if _, ok := cfg.Services["api"]; !ok {
+		t.Error("expected 'api' service from services/api.json5")
+	}
+
+	// Global action from root should be present.
+	if _, ok := cfg.Actions["shared_health"]; !ok {
+		t.Error("expected 'shared_health' action from root config")
+	}
+}
+
+func TestLoadFile_MixedInlineAndRefs(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"main.json5": `{
+			services: {
+				web: "./web.json5",
+				monitoring: {
+					listen: ":9090",
+					routes: [
+						{ match: { path: "/*" }, action: "metrics" },
+					],
+				},
+			},
+			actions: {
+				metrics: { type: "proxy", upstream: "localhost:9100" },
+			},
+		}`,
+		"web.json5": `{
+			listen: ":8080",
+			routes: [
+				{ match: { path: "/*" }, action: "frontend" },
+			],
+			actions: {
+				frontend: { type: "serve", root: "./public" },
+			},
+		}`,
+	})
+
+	result, err := LoadFile(filepath.Join(dir, "main.json5"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	cfg := result.Config
+
+	if len(cfg.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(cfg.Services))
+	}
+	if _, ok := cfg.Services["web"]; !ok {
+		t.Error("expected 'web' service (from file ref)")
+	}
+	if _, ok := cfg.Services["monitoring"]; !ok {
+		t.Error("expected 'monitoring' service (inline)")
+	}
+}
+
+func TestLoadFile_InlineStillWorks(t *testing.T) {
+	dir := writeTestFiles(t, map[string]string{
+		"config.json5": `{
+			services: {
+				web: {
+					listen: ":8080",
+					routes: [
+						{ match: { path: "/*" }, action: "a" },
+					],
+				},
+			},
+			actions: {
+				a: { type: "proxy", upstream: "localhost:80" },
+			},
+		}`,
+	})
+
+	result, err := LoadFile(filepath.Join(dir, "config.json5"))
+	if err != nil {
+		t.Fatalf("existing inline config should still work, got: %v", err)
+	}
+
+	if len(result.Config.Services) != 1 {
+		t.Errorf("expected 1 service, got %d", len(result.Config.Services))
+	}
+	if len(result.Paths) != 1 {
+		t.Errorf("expected 1 path, got %d", len(result.Paths))
 	}
 }

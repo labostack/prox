@@ -42,7 +42,7 @@ Three sections: **services** (listeners), **actions** (handlers), **resources** 
 }
 ```
 
-Routes are evaluated in order, first match wins. Paths support exact (`/health`) and wildcard (`/api/*`) matching. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions).
+Routes are evaluated in order, first match wins. Paths support exact (`/health`) and wildcard (`/api/*`) matching. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli).
 
 ### Action Types
 
@@ -58,6 +58,8 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 Config changes are picked up automatically via file watcher, or manually via `kill -HUP`. Routes and actions are swapped atomically — in-flight requests finish with the old config, new requests use the new one. Invalid configs are rejected silently.
 
+All loaded files are watched — editing a nested service fragment triggers a full reload.
+
 ```
 prox serve -config config.json5          # watcher enabled by default
 prox serve -config config.json5 -watch=false
@@ -72,7 +74,7 @@ prox <command> [flags]
   validate   Validate config (exit 0 = valid, 1 = invalid)
   version    Print version
 
-  -config    Path to config file (default "config.json5")
+  -config    Path to config file or directory (default "config.json5")
   -log-level debug | info | warn | error (default "info")
   -watch     Auto-reload on file change (default true)
 ```
@@ -82,16 +84,20 @@ prox <command> [flags]
 ```bash
 docker build -t prox .
 docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 prox
+
+# Or mount a config directory:
+docker run -v ./config/:/etc/prox/config/ -p 8080:8080 prox serve -config /etc/prox/config/
 ```
 
 ## Architecture
 
 ```
-config.json5 → Load → Validate → Build Router + Actions → Start Listeners
-                                                                │
-                                                    File watcher / SIGHUP
-                                                                │
-                                                    Reload → Validate → Atomic swap
+config.json5 ─┐
+  web.json5 ──┤ Load + Merge → Validate → Build Router + Actions → Start Listeners
+  api.json5 ──┘                                                          │
+                                                           File watcher / SIGHUP
+                                                                         │
+                                                            Reload → Validate → Atomic swap
 ```
 
 ```
