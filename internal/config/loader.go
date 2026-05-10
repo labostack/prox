@@ -131,6 +131,7 @@ type rawService struct {
 	TLS     bool            `json:"tls"`
 	TLSCert string          `json:"tls_cert,omitempty"`
 	TLSKey  string          `json:"tls_key,omitempty"`
+	Config  *ServerConfig   `json:"config,omitempty"`
 	Routes  []rawRouteEntry `json:"routes"`
 }
 
@@ -200,6 +201,7 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 				TLS:     entry.Inline.TLS,
 				TLSCert: entry.Inline.TLSCert,
 				TLSKey:  entry.Inline.TLSKey,
+				Config:  entry.Inline.Config,
 				Routes:  routes,
 			}
 			continue
@@ -295,6 +297,7 @@ type rawFragment struct {
 	TLS       bool                 `json:"tls"`
 	TLSCert   string               `json:"tls_cert,omitempty"`
 	TLSKey    string               `json:"tls_key,omitempty"`
+	Config    *ServerConfig        `json:"config,omitempty"`
 	Routes    []rawRouteEntry      `json:"routes"`
 	Actions   map[string]*Action   `json:"actions"`
 	Resources map[string]*Resource `json:"resources"`
@@ -349,6 +352,7 @@ func (lc *loadContext) loadFragment(path string, parent *Config) (*Service, erro
 		TLS:     frag.TLS,
 		TLSCert: frag.TLSCert,
 		TLSKey:  frag.TLSKey,
+		Config:  frag.Config,
 		Routes:  routes,
 	}, nil
 }

@@ -36,6 +36,17 @@
       listen: ":443",
       tls: true,
       tls_cert: "/etc/prox/certs/",
+
+      // Per-service tuning — override default server and proxy transport timeouts.
+      // Durations accept strings ("5m", "30s") or numbers (seconds).
+      config: {
+        read_timeout: "5m",        // time to read the full request (default: 10s)
+        write_timeout: "5m",       // time to write the full response (default: 30s)
+        idle_timeout: "2m",        // keep-alive idle timeout (default: 120s)
+        response_header_timeout: "5m",  // wait for upstream response headers (default: 30s)
+        flush_interval: -1,        // flush immediately — required for streaming (SSE, long-lived HTTP)
+      },
+
       routes: [
         // L4: TCP pass-through — relay raw TLS to backend (no termination).
         {

@@ -22,11 +22,29 @@ type Config struct {
 
 // Service defines a single listener with its routing rules.
 type Service struct {
-	Listen  string   `json:"listen"`
-	TLS     bool     `json:"tls"`
-	TLSCert string   `json:"tls_cert,omitempty"`
-	TLSKey  string   `json:"tls_key,omitempty"`
-	Routes  []*Route `json:"routes"`
+	Listen  string        `json:"listen"`
+	TLS     bool          `json:"tls"`
+	TLSCert string        `json:"tls_cert,omitempty"`
+	TLSKey  string        `json:"tls_key,omitempty"`
+	Config  *ServerConfig `json:"config,omitempty"`
+	Routes  []*Route      `json:"routes"`
+}
+
+// ServerConfig tunes HTTP server and proxy transport behavior per service.
+// Zero values fall back to built-in defaults.
+type ServerConfig struct {
+	// HTTP server timeouts.
+	ReadTimeout  Duration `json:"read_timeout,omitempty"`
+	WriteTimeout Duration `json:"write_timeout,omitempty"`
+	IdleTimeout  Duration `json:"idle_timeout,omitempty"`
+
+	// Proxy transport settings.
+	ResponseHeaderTimeout Duration `json:"response_header_timeout,omitempty"`
+
+	// FlushInterval controls how often buffered response data is flushed
+	// to the client. Negative value (-1) flushes immediately (streaming).
+	// Zero uses the default buffered behavior.
+	FlushInterval Duration `json:"flush_interval,omitempty"`
 }
 
 // Route binds a request matcher to an action — either by name or inline.
@@ -187,11 +205,21 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.Duration.String())
 }
 
-// UnmarshalJSON decodes a duration string like "5s", "100ms", "1m30s".
+// UnmarshalJSON decodes a duration from either a string ("5s", "100ms", "1m30s")
+// or a number (interpreted as seconds). Negative numbers are allowed (e.g. -1 for
+// immediate flush).
 func (d *Duration) UnmarshalJSON(b []byte) error {
+	// Try numeric first (integer or float → seconds).
+	var num float64
+	if err := json.Unmarshal(b, &num); err == nil {
+		d.Duration = time.Duration(num * float64(time.Second))
+		return nil
+	}
+
+	// Try string format.
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("duration must be a string: %w", err)
+		return fmt.Errorf("duration must be a string (e.g. \"5s\") or a number (seconds): %w", err)
 	}
 
 	parsed, err := time.ParseDuration(s)

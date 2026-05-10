@@ -22,8 +22,9 @@ type Proxy struct {
 	proxy  *httputil.ReverseProxy // static mode
 	target *url.URL
 
-	upstreamTpl string         // dynamic mode template
-	transport   *http.Transport
+	upstreamTpl   string         // dynamic mode template
+	transport     *http.Transport
+	flushInterval time.Duration
 
 	headers  map[string]string
 	timeout  time.Duration
@@ -31,12 +32,23 @@ type Proxy struct {
 }
 
 // NewProxy creates a reverse proxy handler for the given action config.
-func NewProxy(act *config.Action) (*Proxy, error) {
+// svcCfg provides optional service-level transport tuning.
+func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 	headers := act.Headers
 
 	timeout := 30 * time.Second
 	if act.Timeout.Duration > 0 {
 		timeout = act.Timeout.Duration
+	}
+
+	responseHeaderTimeout := timeout
+	if svcCfg != nil && svcCfg.ResponseHeaderTimeout.Duration != 0 {
+		responseHeaderTimeout = svcCfg.ResponseHeaderTimeout.Duration
+	}
+
+	var flushInterval time.Duration
+	if svcCfg != nil && svcCfg.FlushInterval.Duration != 0 {
+		flushInterval = svcCfg.FlushInterval.Duration
 	}
 
 	transport := &http.Transport{
@@ -47,7 +59,7 @@ func NewProxy(act *config.Action) (*Proxy, error) {
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: timeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 	}
 
@@ -60,6 +72,7 @@ func NewProxy(act *config.Action) (*Proxy, error) {
 	if strings.Contains(act.Upstream, "{") {
 		p.upstreamTpl = act.Upstream
 		p.transport = transport
+		p.flushInterval = flushInterval
 		return p, nil
 	}
 
@@ -81,6 +94,7 @@ func NewProxy(act *config.Action) (*Proxy, error) {
 				}
 			}
 		},
+		FlushInterval: flushInterval,
 	}
 	proxy.Transport = transport
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -178,6 +192,7 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		},
+		FlushInterval: p.flushInterval,
 	}
 	proxy.Transport = p.transport
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

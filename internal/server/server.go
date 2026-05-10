@@ -25,10 +25,10 @@ import (
 )
 
 const (
-	shutdownTimeout = 15 * time.Second
-	readTimeout     = 10 * time.Second
-	writeTimeout    = 30 * time.Second
-	idleTimeout     = 120 * time.Second
+	shutdownTimeout    = 15 * time.Second
+	defReadTimeout     = 10 * time.Second
+	defWriteTimeout    = 30 * time.Second
+	defIdleTimeout     = 120 * time.Second
 )
 
 // Group manages multiple HTTP servers, one per configured service.
@@ -51,11 +51,6 @@ func Build(cfg *config.Config) (*Group, error) {
 
 	hints := buildRouteHints(cfg)
 
-	registry, err := action.Build(cfg.Actions, resolver, hints)
-	if err != nil {
-		return nil, fmt.Errorf("building actions: %w", err)
-	}
-
 	g := &Group{
 		handlers: make(map[string]*swappableHandler),
 	}
@@ -67,7 +62,13 @@ func Build(cfg *config.Config) (*Group, error) {
 		// Build router first — its balancer instances are shared with plugins.
 		rt := router.New(svc.Routes)
 
-		srv, handler, err := buildServer(name, svc, cfg, registry, rt)
+		// Build per-service action registry with service-level config.
+		svcRegistry, err := action.Build(cfg.Actions, resolver, hints, svc.Config)
+		if err != nil {
+			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
+		}
+
+		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt)
 		if err != nil {
 			return nil, fmt.Errorf("building service %q: %w", name, err)
 		}
@@ -113,11 +114,6 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 	hints := buildRouteHints(cfg)
 
-	registry, err := action.Build(cfg.Actions, resolver, hints)
-	if err != nil {
-		return fmt.Errorf("building actions: %w", err)
-	}
-
 	// Rebuild balancers for plugin binding.
 	routeBalancers := make(map[string]bal.Balancer)
 
@@ -133,7 +129,13 @@ func (g *Group) Reload(cfg *config.Config) error {
 		}
 
 		rt := router.New(svc.Routes)
-		handler.Swap(rt, registry)
+
+		svcRegistry, err := action.Build(cfg.Actions, resolver, hints, svc.Config)
+		if err != nil {
+			return fmt.Errorf("building actions for service %q: %w", name, err)
+		}
+
+		handler.Swap(rt, svcRegistry)
 
 		// Atomically swap dispatcher routes if this server has one.
 		for _, ms := range g.servers {
@@ -197,6 +199,22 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router) (*managedServer, *swappableHandler, error) {
 	handler := newSwappableHandler(name, rt, registry)
+
+	// Resolve per-service timeouts, falling back to defaults.
+	readTimeout := defReadTimeout
+	writeTimeout := defWriteTimeout
+	idleTimeout := defIdleTimeout
+	if svc.Config != nil {
+		if svc.Config.ReadTimeout.Duration > 0 {
+			readTimeout = svc.Config.ReadTimeout.Duration
+		}
+		if svc.Config.WriteTimeout.Duration > 0 {
+			writeTimeout = svc.Config.WriteTimeout.Duration
+		}
+		if svc.Config.IdleTimeout.Duration > 0 {
+			idleTimeout = svc.Config.IdleTimeout.Duration
+		}
+	}
 
 	srv := &http.Server{
 		Addr:         svc.Listen,
@@ -527,8 +545,9 @@ func (g *Group) shutdown() {
 				slog.Info("server stopped", "service", ms.name)
 			}
 
-			// Wait for active pass relays to drain.
+			// Force-close active relay connections, then wait for goroutines.
 			if ms.dispatch != nil {
+				ms.dispatch.Close()
 				ms.dispatch.Wait()
 			}
 		}(ms)

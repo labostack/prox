@@ -37,12 +37,17 @@ type Route struct {
 type Dispatcher struct {
 	routes atomic.Pointer[[]*Route]
 	wg     sync.WaitGroup // tracks active pass relays
+
+	mu    sync.Mutex     // protects conns
+	conns map[net.Conn]struct{} // active relay connections
 }
 
 // New creates a Dispatcher with the given pre-compiled routes.
 // Routes are evaluated in order — first domain match wins.
 func New(routes []*Route) *Dispatcher {
-	d := &Dispatcher{}
+	d := &Dispatcher{
+		conns: make(map[net.Conn]struct{}),
+	}
 	d.routes.Store(&routes)
 	return d
 }
@@ -73,6 +78,31 @@ func (d *Dispatcher) Serve(ln net.Listener) net.Listener {
 // Wait blocks until all active pass relays have finished.
 func (d *Dispatcher) Wait() {
 	d.wg.Wait()
+}
+
+// Close forcefully closes all active relay connections, causing their
+// io.Copy goroutines to unblock and return. Called during shutdown
+// to prevent the process from hanging on long-lived connections.
+func (d *Dispatcher) Close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for c := range d.conns {
+		c.Close()
+	}
+}
+
+// trackConn registers a connection for shutdown tracking.
+func (d *Dispatcher) trackConn(c net.Conn) {
+	d.mu.Lock()
+	d.conns[c] = struct{}{}
+	d.mu.Unlock()
+}
+
+// untrackConn removes a connection from shutdown tracking.
+func (d *Dispatcher) untrackConn(c net.Conn) {
+	d.mu.Lock()
+	delete(d.conns, c)
+	d.mu.Unlock()
 }
 
 func (d *Dispatcher) acceptLoop(ln net.Listener, httpLn *chanListener) {
@@ -188,6 +218,12 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 		return
 	}
 	defer up.Close()
+
+	// Track both ends for graceful shutdown.
+	d.trackConn(client)
+	d.trackConn(up)
+	defer d.untrackConn(client)
+	defer d.untrackConn(up)
 
 	// Replay the peeked ClientHello bytes to the upstream.
 	if _, err := up.Write(peekedBytes); err != nil {

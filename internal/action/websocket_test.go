@@ -159,7 +159,7 @@ func TestWebSocketProxy(t *testing.T) {
 	proxy, err := NewProxy(&config.Action{
 		Type:     config.ActionTypeProxy,
 		Upstream: echoServer.URL,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewProxy: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestWebSocketProxyWithHeaders(t *testing.T) {
 		Headers: map[string]string{
 			"X-Custom-Token": "secret-value",
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewProxy: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestWebSocketUpstreamReject(t *testing.T) {
 	proxy, err := NewProxy(&config.Action{
 		Type:     config.ActionTypeProxy,
 		Upstream: upstream.URL,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewProxy: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestNonWebSocketPassthrough(t *testing.T) {
 	proxy, err := NewProxy(&config.Action{
 		Type:     config.ActionTypeProxy,
 		Upstream: upstream.URL,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewProxy: %v", err)
 	}

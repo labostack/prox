@@ -37,7 +37,45 @@ A service is a listener with routing rules. Services can be defined inline or lo
       tls: true,               // optional, default: false
       tls_cert: "/path/cert",  // required if tls: true
       tls_key: "/path/key",    // required if tls: true
+      config: {},              // optional, per-service tuning
       routes: [...]            // required, at least one
+    },
+  },
+}
+```
+
+### Service config
+
+The optional `config` block tunes HTTP server timeouts and proxy transport behavior for a specific service. All values fall back to built-in defaults when omitted.
+
+Durations accept strings (`"5s"`, `"1m30s"`, `"5m"`) or numbers (interpreted as seconds).
+
+| Field                      | Default | Description                                                                 |
+| -------------------------- | ------- | --------------------------------------------------------------------------- |
+| `read_timeout`             | `10s`   | Maximum time to read the full request (headers + body)                      |
+| `write_timeout`            | `30s`   | Maximum time to write the full response                                     |
+| `idle_timeout`             | `120s`  | Keep-alive idle timeout before closing the connection                       |
+| `response_header_timeout`  | `30s`   | Maximum time to wait for upstream response headers                          |
+| `flush_interval`           | `0`     | How often to flush buffered proxy response data. `-1` = flush immediately   |
+
+> [!TIP]
+> For streaming protocols (SSE, long-lived HTTP, long-polling), set `flush_interval` to `-1` and increase `read_timeout`, `write_timeout`, and `response_header_timeout` to accommodate long-lived connections.
+
+```json5
+// Streaming-friendly gateway — long timeouts, immediate flushing.
+{
+  services: {
+    gateway: {
+      listen: ":443",
+      tls: true,
+      tls_cert: "/etc/prox/certs/",
+      config: {
+        read_timeout: "5m",
+        write_timeout: "5m",
+        response_header_timeout: "5m",
+        flush_interval: -1,
+      },
+      routes: [...]
     },
   },
 }

@@ -20,7 +20,8 @@ type RouteHints struct {
 }
 
 // Build constructs all action handlers from config.
-func Build(actions map[string]*config.Action, resolver *resource.Resolver, hints *RouteHints) (*Registry, error) {
+// svcCfg is optional service-level configuration for transport tuning.
+func Build(actions map[string]*config.Action, resolver *resource.Resolver, hints *RouteHints, svcCfg *config.ServerConfig) (*Registry, error) {
 	handlers := make(map[string]http.Handler, len(actions))
 
 	for name, act := range actions {
@@ -29,7 +30,7 @@ func Build(actions map[string]*config.Action, resolver *resource.Resolver, hints
 			routePath = hints.PathByAction[name]
 		}
 
-		h, err := buildHandler(act, resolver, routePath)
+		h, err := buildHandler(act, resolver, routePath, svcCfg)
 		if err != nil {
 			return nil, fmt.Errorf("building action %q: %w", name, err)
 		}
@@ -58,10 +59,10 @@ func (reg *Registry) Get(name string) http.Handler {
 	return reg.handlers[name]
 }
 
-func buildHandler(act *config.Action, resolver *resource.Resolver, routePath string) (http.Handler, error) {
+func buildHandler(act *config.Action, resolver *resource.Resolver, routePath string, svcCfg *config.ServerConfig) (http.Handler, error) {
 	switch act.Type {
 	case config.ActionTypeProxy:
-		return NewProxy(act)
+		return NewProxy(act, svcCfg)
 	case config.ActionTypeStatic:
 		return NewStatic(act, resolver)
 	case config.ActionTypeServe:

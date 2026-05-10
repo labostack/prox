@@ -44,7 +44,7 @@ Three sections: **services** (listeners), **actions** (handlers), **resources** 
 }
 ```
 
-Routes are evaluated in order, first match wins. Match criteria include [domain](docs/configuration.md#domain-matching) patterns (`*.example.com`, `test.*.example.com`) and path patterns (`/health`, `/api/*`). Omit `match` for a [catch-all](docs/configuration.md#routes) route. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli). Routes can be [included from external files](docs/configuration.md#route-includes) to keep configs modular. Routes can use a [balancer](docs/configuration.md#load-balancing) to distribute traffic across multiple upstream targets.
+Routes are evaluated in order, first match wins. Match criteria include [domain](docs/configuration.md#domain-matching) patterns (`*.example.com`, `test.*.example.com`) and path patterns (`/health`, `/api/*`). Omit `match` for a [catch-all](docs/configuration.md#routes) route. Actions and resources can be referenced by name or [inlined](docs/configuration.md#inline-actions). Services can be [split into separate files](docs/configuration.md#file-reference) or loaded from a [config directory](docs/configuration.md#directory-mode-cli). Routes can be [included from external files](docs/configuration.md#route-includes) to keep configs modular. Routes can use a [balancer](docs/configuration.md#load-balancing) to distribute traffic across multiple upstream targets. Each service has an optional [`config`](docs/configuration.md#service-config) block for tuning timeouts and streaming behavior.
 
 ### Action Types
 

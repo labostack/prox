@@ -78,7 +78,7 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 		Upstream: upstream.URL,
 	}
 
-	handler, err := NewProxy(act)
+	handler, err := NewProxy(act, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestProxy_CustomHeaders(t *testing.T) {
 		},
 	}
 
-	handler, err := NewProxy(act)
+	handler, err := NewProxy(act, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestProxy_UpstreamDown(t *testing.T) {
 		Timeout:  config.Duration{},
 	}
 
-	handler, err := NewProxy(act)
+	handler, err := NewProxy(act, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBuild_Registry(t *testing.T) {
 		},
 	}
 
-	reg, err := Build(actions, resolver, nil)
+	reg, err := Build(actions, resolver, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
