@@ -424,10 +424,36 @@ See [docs/plugins.md](plugins.md) for the full plugin protocol and authoring gui
 | `timeout`  | string |          | `"5s"`, `"30s"`, `"1m"`                                  |
 | `headers`  | object |          | Extra headers to send to upstream                        |
 | `fallback` | string |          | Named action to invoke when the primary action fails     |
+| `stream`   | bool   |          | Use raw HTTP tunnel for bidirectional streaming           |
 
 The upstream field supports template placeholders: `{target}` (from the route's balancer) and any key from the route's `set` field. For example, `"{target}:{port}"` resolves both the balancer target and a route-level variable.
 
 The `fallback` action is invoked when no balancer target is available or the upstream is unreachable. This enables graceful degradation without returning 502.
+
+#### Streaming mode
+
+When `stream` is `true`, the proxy bypasses Go's `httputil.ReverseProxy` and uses a raw HTTP tunnel. This is required for protocols that use long-lived HTTP requests with simultaneous upload and download (e.g. bidirectional streaming over POST/GET).
+
+In stream mode:
+
+- The request is forwarded to upstream over a raw TCP connection
+- The request body is streamed in the background (upload continues while response flows)
+- The response body is flushed to the client immediately (no buffering)
+- WebSocket upgrades are still detected and handled normally
+
+> [!TIP]
+> Combine `stream: true` with a service-level [`config`](#service-config) that increases timeouts for long-lived connections.
+
+```json5
+{
+  match: { domain: "*.**" },
+  action: {
+    type: "proxy",
+    upstream: "localhost:3501",
+    stream: true,
+  },
+}
+```
 
 ```json5
 // Route with variables and shared action.
