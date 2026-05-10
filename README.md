@@ -3,7 +3,7 @@
 Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatching, hot reload, and zero dependencies.
 
 [![CI](https://github.com/dortanes/prox/actions/workflows/ci.yml/badge.svg)](https://github.com/dortanes/prox/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-%E2%89%A5%201.23-brightgreen.svg)](https://golang.org/)
+[![Go](https://img.shields.io/badge/go-%E2%89%A5%201.25-brightgreen.svg)](https://golang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Quick Start
@@ -48,13 +48,13 @@ Routes are evaluated in order, first match wins. Match criteria include [domain]
 
 ### Action Types
 
-| Type     | Description                                                                                                                |
-| -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Type     | Description                                                                                                                                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `proxy`  | Reverse proxy with [WebSocket support](docs/configuration.md#websocket-support), [load balancing](docs/configuration.md#load-balancing), configurable timeout and [custom headers](docs/configuration.md#proxy--reverse-proxy) |
-| `static` | Fixed response with status, headers, and optional body with [template variables](docs/configuration.md#template-variables) |
-| `serve`  | File server — directory with auto `index.html`, or single file (SPA)                                                       |
-| `pass`   | L4 TCP pass-through — [relay raw TLS to upstream](docs/configuration.md#pass--l4-tcp-pass-through) without termination     |
-| `drop`   | Silently [close the connection](docs/configuration.md#drop--drop-connection) — useful as a catch-all fallback               |
+| `static` | Fixed response with status, headers, and optional body with [template variables](docs/configuration.md#template-variables)                                                                                                     |
+| `serve`  | File server — directory with auto `index.html`, or single file (SPA)                                                                                                                                                           |
+| `pass`   | L4 TCP pass-through — [relay raw TLS to upstream](docs/configuration.md#pass--l4-tcp-pass-through) without termination                                                                                                         |
+| `drop`   | Silently [close the connection](docs/configuration.md#drop--drop-connection) — useful as a catch-all fallback                                                                                                                  |
 
 See [docs/configuration.md](docs/configuration.md) for the full reference.
 
@@ -66,12 +66,8 @@ Routes can distribute traffic across multiple upstreams. The balancer selects a 
 {
   match: { domain: "*.**", path: "/ws" },
   balancer: {
-    type: "roundrobin",   // or "random", "leastconn"
-    targets: [
-      "10.0.1.1:3505",
-      "10.0.1.2:3505",
-      "10.0.1.3:3505",
-    ],
+    type: "roundrobin", // or "random", "leastconn"
+    targets: ["10.0.1.1:3505", "10.0.1.2:3505", "10.0.1.3:3505"],
   },
   action: {
     type: "proxy",
