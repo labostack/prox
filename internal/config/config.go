@@ -56,6 +56,9 @@ type ServerConfig struct {
 	// HTTP/2 transport tuning.
 	H2ReadIdleTimeout Duration `json:"h2_read_idle_timeout,omitempty"` // Ping after idle (default: 30s)
 	H2PingTimeout     Duration `json:"h2_ping_timeout,omitempty"`     // Ping response deadline (default: 15s)
+
+	// Connection limiting.
+	MaxConnections int `json:"max_connections,omitempty"` // Maximum concurrent connections (0 = unlimited)
 }
 
 // Route binds a request matcher to an action — either by name or inline.

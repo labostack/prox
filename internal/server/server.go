@@ -44,7 +44,8 @@ type managedServer struct {
 	name     string
 	server   *http.Server
 	dispatch *dispatcher.Dispatcher // non-nil when service has "pass" routes
-	rawLn    net.Listener           // raw TCP listener (when dispatcher is used)
+	rawLn    net.Listener           // raw TCP listener
+	maxConns int                    // max concurrent connections (0 = unlimited)
 }
 
 // Build creates a server group from the loaded configuration.
@@ -275,6 +276,10 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 		)
 	}
 
+	if svc.Config != nil && svc.Config.MaxConnections > 0 {
+		ms.maxConns = svc.Config.MaxConnections
+	}
+
 	return ms, handler, nil
 }
 
@@ -479,17 +484,26 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 
 // serveDirect starts an HTTP/HTTPS server without L4 dispatching (original path).
 func (ms *managedServer) serveDirect() error {
+	ln, err := net.Listen("tcp", ms.server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", ms.server.Addr, err)
+	}
+	if ms.maxConns > 0 {
+		ln = newLimitListener(ln, ms.maxConns)
+	}
+	ms.rawLn = ln
+
 	slog.Info("starting server",
 		"service", ms.name,
 		"addr", ms.server.Addr,
 		"tls", ms.server.TLSConfig != nil,
+		"max_conns", ms.maxConns,
 	)
 
 	if ms.server.TLSConfig != nil {
-		// Certs are pre-loaded in TLSConfig.Certificates.
-		return ms.server.ListenAndServeTLS("", "")
+		return ms.server.ServeTLS(ln, "", "")
 	}
-	return ms.server.ListenAndServe()
+	return ms.server.Serve(ln)
 }
 
 // serveWithDispatcher starts a raw TCP listener, runs the L4 dispatcher,
@@ -498,6 +512,9 @@ func (ms *managedServer) serveWithDispatcher() error {
 	ln, err := net.Listen("tcp", ms.server.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", ms.server.Addr, err)
+	}
+	if ms.maxConns > 0 {
+		ln = newLimitListener(ln, ms.maxConns)
 	}
 	ms.rawLn = ln // store for shutdown
 
@@ -853,4 +870,43 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 	}
 
 	return bindings
+}
+
+// --- connection limiter ---
+
+// limitListener wraps a net.Listener with a concurrency limit.
+// When the limit is reached, Accept blocks until an existing connection closes.
+type limitListener struct {
+	net.Listener
+	sem chan struct{}
+}
+
+func newLimitListener(ln net.Listener, maxConns int) net.Listener {
+	return &limitListener{
+		Listener: ln,
+		sem:      make(chan struct{}, maxConns),
+	}
+}
+
+func (l *limitListener) Accept() (net.Conn, error) {
+	l.sem <- struct{}{} // acquire slot
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		<-l.sem // release on error
+		return nil, err
+	}
+	return &limitConn{Conn: conn, sem: l.sem}, nil
+}
+
+// limitConn releases a semaphore slot when closed.
+type limitConn struct {
+	net.Conn
+	sem  chan struct{}
+	once sync.Once
+}
+
+func (c *limitConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { <-c.sem })
+	return err
 }

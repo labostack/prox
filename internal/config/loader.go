@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,7 +93,22 @@ func (lc *loadContext) track(absPath string) error {
 		return fmt.Errorf("circular config reference: %s", absPath)
 	}
 	lc.loaded[absPath] = true
+	checkFilePermissions(absPath)
 	return nil
+}
+
+// checkFilePermissions warns if a config file is world-writable.
+func checkFilePermissions(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if info.Mode().Perm()&0o002 != 0 {
+		slog.Warn("config file is world-writable",
+			"path", path,
+			"mode", fmt.Sprintf("%04o", info.Mode().Perm()),
+		)
+	}
 }
 
 // --- root file loading ---
