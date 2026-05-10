@@ -22,6 +22,7 @@ var matchResultKey = ctxKey{}
 
 // MatchResult holds data captured during route matching, available to handlers.
 type MatchResult struct {
+	RouteIndex    int    // index of the matched route in the service's route list
 	Action        string // resolved action name
 	DomainPattern string // the pattern from config, e.g. "*.myapp.dev"
 	MatchDomain   string // captured "*" wildcard value(s), e.g. "sub" for *.myapp.dev
@@ -163,7 +164,7 @@ func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
 func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	host := stripPort(r.Host)
 
-	for _, route := range rt.routes {
+	for i, route := range rt.routes {
 		ok, captures, globTail := route.matchDomain(host)
 		if !ok {
 			continue
@@ -176,6 +177,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 		}
 
 		result := &MatchResult{
+			RouteIndex:    i,
 			Action:        route.action,
 			DomainPattern: route.domain,
 			MatchDomain:   strings.Join(captures, "."),

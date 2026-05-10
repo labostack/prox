@@ -63,11 +63,12 @@ type ServerConfig struct {
 // Plugins can dynamically manage balancer targets at runtime.
 // Set defines route-level variables available as {key} in upstream templates.
 type Route struct {
-	Match    *Match            `json:"match"`
-	Plugins  []string          `json:"plugins,omitempty"`
-	Balancer *BalancerConfig   `json:"balancer,omitempty"`
-	Set      map[string]string `json:"set,omitempty"`
-	Action   ActionRef         `json:"action"`
+	Match         *Match            `json:"match"`
+	Plugins       []string          `json:"plugins,omitempty"`
+	PluginTimeout Duration          `json:"plugin_timeout,omitempty"` // per-request timeout for plugin hooks (default: 5s)
+	Balancer      *BalancerConfig   `json:"balancer,omitempty"`
+	Set           map[string]string `json:"set,omitempty"`
+	Action        ActionRef         `json:"action"`
 }
 
 // Match defines the criteria for a route to activate.

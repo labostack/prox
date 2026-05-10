@@ -2,9 +2,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -55,28 +57,14 @@ func Build(cfg *config.Config) (*Group, error) {
 		handlers: make(map[string]*swappableHandler),
 	}
 
-	// Collect route balancers for plugin binding.
+	// Collect route balancers for plugin binding (first pass).
 	routeBalancers := make(map[string]bal.Balancer)
+	routers := make(map[string]*router.Router)
 
 	for name, svc := range cfg.Services {
-		// Build router first — its balancer instances are shared with plugins.
 		rt := router.New(svc.Routes)
+		routers[name] = rt
 
-		// Build per-service action registry with service-level config.
-		svcRegistry, err := action.Build(cfg.Actions, resolver, hints, svc.Config)
-		if err != nil {
-			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
-		}
-
-		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt)
-		if err != nil {
-			return nil, fmt.Errorf("building service %q: %w", name, err)
-		}
-		g.servers = append(g.servers, srv)
-		g.handlers[name] = handler
-
-		// For plugin-managed routes, wrap the balancer in a Grouped balancer
-		// so it can receive grouped targets and route by key.
 		for i, route := range svc.Routes {
 			if route.Balancer != nil && len(route.Plugins) > 0 {
 				inner := rt.RouteBalancer(i)
@@ -95,12 +83,29 @@ func Build(cfg *config.Config) (*Group, error) {
 		}
 	}
 
-	// Build plugin bindings.
+	// Build plugin manager before servers so handlers can reference it.
 	bindings := buildPluginBindings(cfg, routeBalancers)
 	if len(bindings) > 0 {
 		g.plugins = plugin.NewManager()
 		g.plugins.Configure(bindings)
 		slog.Info("plugin bindings configured", "count", len(bindings))
+	}
+
+	// Build servers (second pass).
+	for name, svc := range cfg.Services {
+		rt := routers[name]
+
+		svcRegistry, err := action.Build(cfg.Actions, resolver, hints, svc.Config)
+		if err != nil {
+			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
+		}
+
+		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins)
+		if err != nil {
+			return nil, fmt.Errorf("building service %q: %w", name, err)
+		}
+		g.servers = append(g.servers, srv)
+		g.handlers[name] = handler
 	}
 
 	return g, nil
@@ -140,7 +145,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 		// Atomically swap dispatcher routes if this server has one.
 		for _, ms := range g.servers {
 			if ms.name == name && ms.dispatch != nil {
-				routes := buildDispatcherRoutes(svc, cfg)
+				routes := buildDispatcherRoutes(name, svc, cfg)
 				ms.dispatch.SwapRoutes(routes)
 				slog.Info("dispatcher routes reloaded", "service", name, "routes", len(routes))
 			}
@@ -197,8 +202,8 @@ func (g *Group) Reload(cfg *config.Config) error {
 	return nil
 }
 
-func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router) (*managedServer, *swappableHandler, error) {
-	handler := newSwappableHandler(name, rt, registry)
+func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager) (*managedServer, *swappableHandler, error) {
+	handler := newSwappableHandler(name, rt, registry, plugins)
 
 	// Resolve per-service timeouts, falling back to defaults.
 	readTimeout := defReadTimeout
@@ -253,9 +258,9 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 	}
 
 	// Check if this service has any "pass" routes — if so, build a dispatcher.
-	dispatchRoutes := buildDispatcherRoutes(svc, cfg)
+	dispatchRoutes := buildDispatcherRoutes(name, svc, cfg)
 	if len(dispatchRoutes) > 0 {
-		ms.dispatch = dispatcher.New(dispatchRoutes)
+		ms.dispatch = dispatcher.New(dispatchRoutes, plugins)
 
 		passCount := 0
 		for _, r := range dispatchRoutes {
@@ -277,7 +282,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 // Returns nil if the service has no "pass" routes (no dispatcher needed).
 // When the dispatcher is active, "drop" routes with domain patterns also
 // participate in L4 matching as a bonus.
-func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatcher.Route {
+func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.Config) []*dispatcher.Route {
 	hasPass := false
 	for _, route := range svc.Routes {
 		if resolveActionType(route, cfg) == config.ActionTypePass {
@@ -291,12 +296,13 @@ func buildDispatcherRoutes(svc *config.Service, cfg *config.Config) []*dispatche
 
 	// Build all routes (not just pass/drop routes) — order matters for correct dispatching.
 	routes := make([]*dispatcher.Route, 0, len(svc.Routes))
-	for _, route := range svc.Routes {
+	for i, route := range svc.Routes {
 		if route.Match == nil || route.Match.Domain == "" {
 			continue // L4 dispatcher can only match on domain (SNI)
 		}
 
 		dr := &dispatcher.Route{
+			RouteID:        fmt.Sprintf("%s:%d", serviceName, i),
 			Domain:         route.Match.Domain,
 			DomainSegments: strings.Split(strings.ToLower(route.Match.Domain), "."),
 		}
@@ -569,10 +575,11 @@ type routingSnapshot struct {
 type swappableHandler struct {
 	name    string
 	current atomic.Pointer[routingSnapshot]
+	plugins *plugin.Manager // nil when no plugins configured
 }
 
-func newSwappableHandler(name string, rt *router.Router, registry *action.Registry) *swappableHandler {
-	h := &swappableHandler{name: name}
+func newSwappableHandler(name string, rt *router.Router, registry *action.Registry, plugins *plugin.Manager) *swappableHandler {
+	h := &swappableHandler{name: name, plugins: plugins}
 	h.current.Store(&routingSnapshot{router: rt, registry: registry})
 	return h
 }
@@ -607,6 +614,56 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Plugin on_request gate.
+	var reqInfo *plugin.RequestInfo
+	if h.plugins != nil {
+		mr := router.GetMatchResult(r)
+		routeID := fmt.Sprintf("%s:%d", h.name, mr.RouteIndex)
+		reqInfo = buildRequestInfo(r, mr, routeID)
+
+		if h.plugins.HasHook(routeID, plugin.HookOnRequest) {
+			res, err := h.plugins.OnRequest(r.Context(), routeID, reqInfo)
+			if err != nil {
+				slog.Error("plugin on_request error",
+					"service", h.name,
+					"route", routeID,
+					"error", err,
+				)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			if res.Drop {
+				panic(http.ErrAbortHandler)
+			}
+			if !res.Allow {
+				status := res.Status
+				if status == 0 {
+					status = http.StatusForbidden
+				}
+				for k, v := range res.Headers {
+					w.Header().Set(k, v)
+				}
+				http.Error(w, res.Body, status)
+				return
+			}
+			// Inject allowed headers into the request.
+			for k, v := range res.Headers {
+				r.Header.Set(k, v)
+			}
+		}
+
+		// Wrap response writer for on_response hook.
+		if h.plugins.HasHook(routeID, plugin.HookOnResponse) {
+			w = &hookResponseWriter{
+				ResponseWriter: w,
+				plugins:        h.plugins,
+				routeID:        routeID,
+				reqInfo:        reqInfo,
+				ctx:            r.Context(),
+			}
+		}
+	}
+
 	handler := snap.registry.Get(actionName)
 	if handler == nil {
 		slog.Error("action handler not found",
@@ -625,6 +682,115 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	handler.ServeHTTP(w, r)
+}
+
+// maxPluginBody is the maximum request body size forwarded to plugins.
+// Larger bodies are truncated — the plugin receives only the first 64KB.
+const maxPluginBody = 64 * 1024
+
+// buildRequestInfo creates a RequestInfo from the matched request.
+func buildRequestInfo(r *http.Request, mr *router.MatchResult, routeID string) *plugin.RequestInfo {
+	headers := make(map[string]string, len(r.Header))
+	for k, vals := range r.Header {
+		if len(vals) > 0 {
+			headers[k] = vals[0]
+		}
+	}
+
+	info := &plugin.RequestInfo{
+		RouteID:       routeID,
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Query:         r.URL.RawQuery,
+		Domain:        mr.Domain,
+		Host:          r.Host,
+		Proto:         r.Proto,
+		RemoteAddr:    r.RemoteAddr,
+		ContentLength: r.ContentLength,
+		Headers:       headers,
+		MatchDomain:   mr.MatchDomain,
+		MatchGlob:     mr.MatchGlob,
+		MatchPath:     mr.MatchPath,
+		Vars:          mr.Vars,
+	}
+
+	// Read up to maxPluginBody bytes for the plugin, then restore the body.
+	if r.Body != nil && r.ContentLength != 0 {
+		lr := io.LimitReader(r.Body, maxPluginBody+1)
+		body, err := io.ReadAll(lr)
+		if err == nil && len(body) > 0 {
+			if len(body) > maxPluginBody {
+				info.Body = body[:maxPluginBody]
+			} else {
+				info.Body = body
+			}
+			// Restore the body so the upstream handler can read it.
+			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+		}
+	}
+
+	return info
+}
+
+// hookResponseWriter intercepts WriteHeader to call the on_response plugin hook
+// before headers are sent to the client.
+type hookResponseWriter struct {
+	http.ResponseWriter
+	plugins     *plugin.Manager
+	routeID     string
+	reqInfo     *plugin.RequestInfo
+	ctx         context.Context
+	headersSent bool
+}
+
+func (hw *hookResponseWriter) WriteHeader(statusCode int) {
+	if hw.headersSent {
+		hw.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
+	hw.headersSent = true
+
+	// Build upstream response info from the current headers.
+	respHeaders := make(map[string]string, len(hw.ResponseWriter.Header()))
+	for k, vals := range hw.ResponseWriter.Header() {
+		if len(vals) > 0 {
+			respHeaders[k] = vals[0]
+		}
+	}
+
+	mod, err := hw.plugins.OnResponse(hw.ctx, hw.routeID, hw.reqInfo, &plugin.UpstreamResponseInfo{
+		Status:  statusCode,
+		Headers: respHeaders,
+	})
+	if err != nil {
+		slog.Error("plugin on_response error",
+			"route", hw.routeID,
+			"error", err,
+		)
+		// Continue with original response on error.
+		hw.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
+
+	// Apply modifications.
+	for _, key := range mod.Remove {
+		hw.ResponseWriter.Header().Del(key)
+	}
+	for k, v := range mod.Headers {
+		hw.ResponseWriter.Header().Set(k, v)
+	}
+	if mod.Status != 0 {
+		statusCode = mod.Status
+	}
+
+	hw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (hw *hookResponseWriter) Write(b []byte) (int, error) {
+	if !hw.headersSent {
+		hw.WriteHeader(http.StatusOK)
+	}
+	return hw.ResponseWriter.Write(b)
 }
 
 // buildRouteHints maps action names to their route paths (for prefix stripping).
@@ -680,6 +846,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 					Plugin:   absPath,
 					Match:    match,
 					Balancer: b,
+					Timeout:  route.PluginTimeout.Duration,
 				})
 			}
 		}

@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dortanes/prox/internal/balancer"
+	"github.com/dortanes/prox/internal/plugin"
 )
 
 const (
@@ -20,6 +22,7 @@ const (
 
 // Route is a pre-compiled L4 route for domain-based dispatching.
 type Route struct {
+	RouteID        string   // e.g. "gateway:0" — matches plugin binding key
 	Domain         string   // original pattern (e.g. "*.cdn.example.com")
 	DomainSegments []string // split + lowered segments for glob matching
 	DomainGlob     bool     // true when pattern ends with "**"
@@ -35,8 +38,9 @@ type Route struct {
 // TCP relay; everything else is fed to the HTTP server via a synthetic
 // net.Listener.
 type Dispatcher struct {
-	routes atomic.Pointer[[]*Route]
-	wg     sync.WaitGroup // tracks active pass relays
+	routes  atomic.Pointer[[]*Route]
+	wg      sync.WaitGroup // tracks active pass relays
+	plugins *plugin.Manager // optional, for on_connect hooks
 
 	mu    sync.Mutex     // protects conns
 	conns map[net.Conn]struct{} // active relay connections
@@ -44,9 +48,10 @@ type Dispatcher struct {
 
 // New creates a Dispatcher with the given pre-compiled routes.
 // Routes are evaluated in order — first domain match wins.
-func New(routes []*Route) *Dispatcher {
+func New(routes []*Route, plugins *plugin.Manager) *Dispatcher {
 	d := &Dispatcher{
-		conns: make(map[net.Conn]struct{}),
+		conns:   make(map[net.Conn]struct{}),
+		plugins: plugins,
 	}
 	d.routes.Store(&routes)
 	return d
@@ -162,6 +167,29 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 		}
 
 		if route.IsPass {
+			// Plugin on_connect gate.
+			if d.plugins != nil && d.plugins.HasHook(route.RouteID, plugin.HookOnConnect) {
+				matches, globTail := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				res, err := d.plugins.OnConnect(ctx, route.RouteID, &plugin.ConnInfo{
+					RouteID:     route.RouteID,
+					Domain:      sni,
+					RemoteAddr:  conn.RemoteAddr().String(),
+					MatchDomain: strings.Join(matches, "."),
+					MatchGlob:   globTail,
+				})
+				cancel()
+				if err != nil || !res.Allow {
+					slog.Debug("l4 plugin denied connection",
+						"sni", sni,
+						"pattern", route.Domain,
+						"remote", conn.RemoteAddr(),
+					)
+					conn.Close()
+					return
+				}
+			}
+
 			// Resolve upstream — static or balanced.
 			upstream := route.Upstream
 			var target string
@@ -271,6 +299,29 @@ func matchDomain(patternSegments []string, glob bool, host string) bool {
 		}
 	}
 	return true
+}
+
+// matchDomainCaptures extracts wildcard captures from a matched domain.
+// Returns (captures, globTail). Only called after matchDomain returns true.
+func matchDomainCaptures(patternSegments []string, glob bool, host string) ([]string, string) {
+	hostSegments := strings.Split(host, ".")
+	var captures []string
+
+	for i, pat := range patternSegments {
+		if i >= len(hostSegments) {
+			break
+		}
+		if pat == "*" {
+			captures = append(captures, hostSegments[i])
+		}
+	}
+
+	var globTail string
+	if glob && len(hostSegments) > len(patternSegments) {
+		globTail = strings.Join(hostSegments[len(patternSegments):], ".")
+	}
+
+	return captures, globTail
 }
 
 // matchSegment checks if a host segment matches a pattern segment.
