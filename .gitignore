@@ -4,6 +4,7 @@
 
 # Build output
 dist/
+site/
 
 # IDE
 .idea/
@@ -20,3 +21,4 @@ Thumbs.db
 coverage.out
 coverage.html
 GEMINI.md
+.gemini
