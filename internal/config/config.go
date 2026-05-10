@@ -105,6 +105,7 @@ type Action struct {
 	// Proxy-specific fields.
 	Upstream string   `json:"upstream,omitempty"`
 	Timeout  Duration `json:"timeout,omitempty"`
+	Stream   bool     `json:"stream,omitempty"` // Use raw HTTP tunnel for bidirectional streaming.
 
 	// Fallback action name — invoked when the primary action fails
 	// (e.g. no target selected, upstream unreachable).

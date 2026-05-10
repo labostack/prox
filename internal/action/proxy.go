@@ -25,6 +25,7 @@ type Proxy struct {
 	upstreamTpl   string         // dynamic mode template
 	transport     *http.Transport
 	flushInterval time.Duration
+	stream        bool // use raw HTTP tunnel for streaming
 
 	headers  map[string]string
 	timeout  time.Duration
@@ -66,6 +67,7 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 	p := &Proxy{
 		headers: headers,
 		timeout: timeout,
+		stream:  act.Stream,
 	}
 
 	// Dynamic mode: upstream contains template placeholders.
@@ -124,6 +126,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveWebSocket(w, r, p.target, p.headers, p.timeout)
 		return
 	}
+	if p.stream {
+		serveTunnel(w, r, p.target, p.headers, p.timeout)
+		return
+	}
 	p.proxy.ServeHTTP(w, r)
 }
 
@@ -176,6 +182,10 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 
 	if isWebSocketUpgrade(r) {
 		serveWebSocket(w, r, target, p.headers, p.timeout)
+		return
+	}
+	if p.stream {
+		serveTunnel(w, r, target, p.headers, p.timeout)
 		return
 	}
 
