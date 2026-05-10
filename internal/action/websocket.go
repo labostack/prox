@@ -45,7 +45,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 		}
 	}
 
-	upstream, err := net.DialTimeout("tcp", host, timeout)
+	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
 		slog.Error("websocket upstream dial failed",
 			"upstream", host,

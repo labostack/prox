@@ -299,3 +299,16 @@ func durationOr(svcCfg *config.ServerConfig, getter func(*config.ServerConfig) t
 	}
 	return fallback
 }
+
+// dialUpstream connects to an upstream address, using TLS for https/wss schemes.
+func dialUpstream(scheme, addr, serverName string, timeout time.Duration) (net.Conn, error) {
+	switch scheme {
+	case "https", "wss":
+		dialer := &net.Dialer{Timeout: timeout}
+		return tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+			ServerName: serverName,
+		})
+	default:
+		return net.DialTimeout("tcp", addr, timeout)
+	}
+}

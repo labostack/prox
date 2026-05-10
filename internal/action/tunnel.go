@@ -35,7 +35,7 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 		}
 	}
 
-	upstream, err := net.DialTimeout("tcp", host, timeout)
+	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
 		slog.Error("tunnel upstream dial failed",
 			"upstream", host,
