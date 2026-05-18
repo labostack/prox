@@ -8,6 +8,8 @@ Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatch
 
 **[Documentation](https://dortanes.github.io/prox)** · [Getting Started](https://dortanes.github.io/prox/getting-started) · [Configuration](https://dortanes.github.io/prox/configuration/) · [Plugins](https://dortanes.github.io/prox/plugins/) · [Deployment](https://dortanes.github.io/prox/deployment)
 
+> ⚠️ **Note:** This project is currently under active development. Core features, APIs, and configuration structures may undergo significant breaking changes.
+
 ## Quick Start
 
 ```bash
@@ -81,10 +83,21 @@ p.Run()
 
 ```json5
 {
-  match: { domain: "*.example.com", path: "/api/*" },
-  plugins: ["./plugins/auth.go"],
-  plugin_timeout: "2s",
-  action: { type: "proxy", upstream: "localhost:3000" },
+  plugins: {
+    auth: { path: "./plugins/auth.go" },
+  },
+  services: {
+    web: {
+      routes: [
+        {
+          match: { domain: "*.example.com", path: "/api/*" },
+          plugins: ["auth"],
+          plugin_timeout: "2s",
+          action: { type: "proxy", upstream: "localhost:3000" },
+        }
+      ]
+    }
+  }
 }
 ```
 
