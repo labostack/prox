@@ -848,11 +848,17 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 				}
 			}
 
-			for _, pluginPath := range route.Plugins {
+			for _, pluginRef := range route.Plugins {
+				pluginPath := pluginRef
+				if p, ok := cfg.Plugins[pluginRef]; ok {
+					pluginPath = p.Path
+				}
+
 				absPath, err := filepath.Abs(pluginPath)
 				if err != nil {
 					slog.Warn("invalid plugin path",
-						"plugin", pluginPath,
+						"plugin", pluginRef,
+						"path", pluginPath,
 						"error", err,
 					)
 					continue
