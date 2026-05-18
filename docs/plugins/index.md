@@ -79,6 +79,10 @@ Prox can compile plugin sources automatically — no manual build step needed.
 
 Compiled binaries are placed next to the source. Rebuilds are **skipped** if the binary is newer than the source (mtime check).
 
+### Dependency Resolution
+
+If a plugin compilation fails and a `go.mod` file is present in its directory, prox will automatically run `go mod tidy` to resolve any missing third-party dependencies (such as the `github.com/dortanes/prox/sdk`), update the `go.sum` file, and retry the build. This ensures seamless support for Go Workspaces (`go.work`) during local development while guaranteeing flawless automated builds in clean, containerized, or production environments.
+
 ## Lifecycle
 
 ```
