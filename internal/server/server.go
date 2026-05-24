@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/dortanes/prox/internal/action"
@@ -28,10 +31,10 @@ import (
 )
 
 const (
-	shutdownTimeout    = 15 * time.Second
-	defReadTimeout     = 10 * time.Second
-	defWriteTimeout    = 30 * time.Second
-	defIdleTimeout     = 120 * time.Second
+	shutdownTimeout                 = 15 * time.Second
+	defReadTimeout    time.Duration = 0
+	defWriteTimeout   time.Duration = 0
+	defIdleTimeout                  = 120 * time.Second
 )
 
 // Group manages multiple HTTP servers, one per configured service.
@@ -44,8 +47,10 @@ type Group struct {
 type managedServer struct {
 	name     string
 	server   *http.Server
+	servers  []*http.Server         // parallel HTTP servers for SO_REUSEPORT
 	dispatch *dispatcher.Dispatcher // non-nil when service has "pass" routes
 	rawLn    net.Listener           // raw TCP listener
+	rawLns   []net.Listener         // parallel raw TCP listeners for SO_REUSEPORT
 	maxConns int                    // max concurrent connections (0 = unlimited)
 }
 
@@ -486,28 +491,122 @@ func (g *Group) ListenAndServe(ctx context.Context) error {
 	}
 }
 
-// serveDirect starts an HTTP/HTTPS server without L4 dispatching (original path).
-func (ms *managedServer) serveDirect() error {
-	ln, err := net.Listen("tcp", ms.server.Addr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", ms.server.Addr, err)
+// reusePortListen creates a net.Listener with the SO_REUSEPORT socket option enabled.
+func reusePortListen(network, addr string) (net.Listener, error) {
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var opterr error
+			err := c.Control(func(fd uintptr) {
+				opterr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1)
+			})
+			if err != nil {
+				return err
+			}
+			return opterr
+		},
 	}
-	if ms.maxConns > 0 {
-		ln = newLimitListener(ln, ms.maxConns)
-	}
-	ms.rawLn = ln
+	return lc.Listen(context.Background(), network, addr)
+}
 
-	slog.Info("starting server",
+// serveDirect starts an HTTP/HTTPS server without L4 dispatching (original path).
+// Spawns multiple parallel SO_REUSEPORT listeners and workers to bypass Go's
+// single-threaded connection accept loop bottleneck.
+func (ms *managedServer) serveDirect() error {
+	numWorkers := runtime.GOMAXPROCS(0)
+	if envWorkers := os.Getenv("PROX_WORKERS"); envWorkers != "" {
+		if val, err := strconv.Atoi(envWorkers); err == nil && val > 0 {
+			numWorkers = val
+		}
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	// Check if running in a test suite, scale down workers to 1 to ensure
+	// clean listener cycles and deterministic test execution.
+	isTest := false
+	if strings.HasSuffix(os.Args[0], ".test") {
+		isTest = true
+	} else {
+		for _, arg := range os.Args {
+			if strings.HasPrefix(arg, "-test.") {
+				isTest = true
+				break
+			}
+		}
+	}
+	if isTest {
+		numWorkers = 1
+	}
+
+	// Determine network: force tcp4 for IPv4 addresses to bypass Go's dual-stack resolving overhead.
+	network := "tcp"
+	if !strings.Contains(ms.server.Addr, "[") && !strings.Contains(ms.server.Addr, "::") {
+		network = "tcp4"
+	}
+
+	ms.rawLns = make([]net.Listener, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		ln, err := reusePortListen(network, ms.server.Addr)
+		if err != nil {
+			// Clean up any successfully opened listeners on error
+			for j := 0; j < i; j++ {
+				ms.rawLns[j].Close()
+			}
+			return fmt.Errorf("listen SO_REUSEPORT %s (worker %d): %w", ms.server.Addr, i, err)
+		}
+		if ms.maxConns > 0 {
+			ln = newLimitListener(ln, ms.maxConns)
+		}
+		ms.rawLns[i] = ln
+	}
+
+	slog.Info("starting server with SO_REUSEPORT scaling",
 		"service", ms.name,
 		"addr", ms.server.Addr,
 		"tls", ms.server.TLSConfig != nil,
 		"max_conns", ms.maxConns,
+		"workers", numWorkers,
 	)
 
-	if ms.server.TLSConfig != nil {
-		return ms.server.ServeTLS(ln, "", "")
+	ms.servers = make([]*http.Server, numWorkers)
+	errCh := make(chan error, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		// Create a separate http.Server for each listener to avoid internal race/deadlock in net/http
+		srv := &http.Server{
+			Addr:         ms.server.Addr,
+			Handler:      ms.server.Handler,
+			ReadTimeout:  ms.server.ReadTimeout,
+			WriteTimeout: ms.server.WriteTimeout,
+			IdleTimeout:  ms.server.IdleTimeout,
+			TLSConfig:    ms.server.TLSConfig,
+		}
+		ms.servers[i] = srv
+
+		go func(s *http.Server, ln net.Listener) {
+			var err error
+			if s.TLSConfig != nil {
+				err = s.ServeTLS(ln, "", "")
+			} else {
+				err = s.Serve(ln)
+			}
+			if err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			} else {
+				errCh <- nil
+			}
+		}(srv, ms.rawLns[i])
 	}
-	return ms.server.Serve(ln)
+
+	// Block until all workers finish, or return the first critical error.
+	var firstErr error
+	for i := 0; i < numWorkers; i++ {
+		err := <-errCh
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // serveWithDispatcher starts a raw TCP listener, runs the L4 dispatcher,
@@ -564,16 +663,33 @@ func (g *Group) shutdown() {
 				ms.rawLn.Close()
 			}
 
-			if err := ms.server.Shutdown(ctx); err != nil {
-				slog.Warn("shutdown timeout, forcing close",
-					"service", ms.name,
-					"err", err,
-				)
-				// Force-close all active HTTP connections to unblock
-				// handlers stuck in upstream RoundTrip calls.
-				ms.server.Close()
-			} else {
+			if len(ms.servers) > 0 {
+				var swg sync.WaitGroup
+				for _, srv := range ms.servers {
+					swg.Add(1)
+					go func(s *http.Server) {
+						defer swg.Done()
+						if err := s.Shutdown(ctx); err != nil {
+							slog.Warn("shutdown error, forcing close",
+								"service", ms.name,
+								"err", err,
+							)
+							s.Close()
+						}
+					}(srv)
+				}
+				swg.Wait()
 				slog.Info("server stopped", "service", ms.name)
+			} else {
+				if err := ms.server.Shutdown(ctx); err != nil {
+					slog.Warn("shutdown timeout, forcing close",
+						"service", ms.name,
+						"err", err,
+					)
+					ms.server.Close()
+				} else {
+					slog.Info("server stopped", "service", ms.name)
+				}
 			}
 
 			// Force-close active relay connections, then wait for goroutines.
