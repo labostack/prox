@@ -49,11 +49,12 @@ func (fp *fastStaticProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if prior := r.Header["X-Forwarded-For"]; len(prior) > 0 {
 		r.Header["X-Forwarded-For"] = []string{prior[0] + ", " + clientIP}
 	} else {
-		if clientIP == "127.0.0.1" {
+		switch clientIP {
+		case "127.0.0.1":
 			r.Header["X-Forwarded-For"] = localXFF
-		} else if clientIP == "::1" {
+		case "::1":
 			r.Header["X-Forwarded-For"] = localIPv6XFF
-		} else {
+		default:
 			r.Header["X-Forwarded-For"] = []string{clientIP}
 		}
 	}
@@ -113,7 +114,7 @@ func (fp *fastStaticProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// that w implements io.ReaderFrom and delegates to it, using net/http's
 	// highly optimized internal buffer pool and completely bypassing sync.Pool.
 	_, _ = io.Copy(w, resp.Body)
-	resp.Body.Close() // Manual close to bypass defer registration overhead
+	_ = resp.Body.Close() // Manual close to bypass defer registration overhead
 }
 
 // isHopHeader checks if a header is a hop-by-hop header using a compiler-optimized jump table.
