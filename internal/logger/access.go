@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,10 +27,11 @@ type AccessEntry struct {
 }
 
 var (
-	accessMu      sync.RWMutex
-	accessGlobal  *FileWriter
-	accessRoutes  map[string]*FileWriter
-	accessWriters []*FileWriter // deduplicated for reopen/close
+	accessMu          sync.RWMutex
+	accessGlobal      *FileWriter
+	accessRoutes      map[string]*FileWriter
+	accessWriters     []*FileWriter // deduplicated for reopen/close
+	accessEnabledFlag atomic.Bool
 )
 
 // SetupAccess configures access log file destinations.
@@ -72,16 +74,14 @@ func SetupAccess(globalPath string, routePaths map[string]string) error {
 	}
 
 	accessWriters = allWriters
+	accessEnabledFlag.Store(accessGlobal != nil || len(accessRoutes) > 0)
 	return nil
 }
 
 // AccessEnabled reports whether any access log output is active (file or console).
 // Used by the handler to skip building AccessEntry when nothing would be emitted.
 func AccessEnabled() bool {
-	accessMu.RLock()
-	hasFile := accessGlobal != nil || len(accessRoutes) > 0
-	accessMu.RUnlock()
-	if hasFile {
+	if accessEnabledFlag.Load() {
 		return true
 	}
 	return slog.Default().Enabled(context.Background(), slog.LevelInfo)
@@ -172,6 +172,7 @@ func accessCloseLocked() {
 	accessGlobal = nil
 	accessRoutes = nil
 	accessWriters = nil
+	accessEnabledFlag.Store(false)
 }
 
 // formatDuration renders milliseconds in a human-friendly way.

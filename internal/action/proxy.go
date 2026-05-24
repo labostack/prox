@@ -48,7 +48,7 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 		timeout = act.Timeout.Duration
 	}
 
-	responseHeaderTimeout := timeout
+	var responseHeaderTimeout time.Duration
 	if svcCfg != nil && svcCfg.ResponseHeaderTimeout.Duration != 0 {
 		responseHeaderTimeout = svcCfg.ResponseHeaderTimeout.Duration
 	}
@@ -290,11 +290,11 @@ func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, resp
 		}
 	}
 
-	maxIdle := 256
-	maxIdlePerHost := 128
+	maxIdle := 4096
+	maxIdlePerHost := 4096
 	tlsHandshake := 10 * time.Second
-	readBuf := 64 * 1024
-	writeBuf := 64 * 1024
+	readBuf := 4096
+	writeBuf := 4096
 	disableCompression := true // better default for reverse proxy
 	if svcCfg != nil {
 		if svcCfg.MaxIdleConns > 0 {
