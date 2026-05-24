@@ -60,6 +60,8 @@ func GetMatchResult(r *http.Request) *MatchResult {
 type Router struct {
 	routes           []*compiledRoute
 	needsDomainMatch bool // true if any route has domain-based matching
+	isCatchAllOnly   bool // true if there is only one catch-all route
+	catchAllAction   string
 }
 
 // compiledRoute is an optimized, pre-processed representation of a config route.
@@ -136,6 +138,15 @@ func New(routes []*config.Route) *Router {
 			break
 		}
 	}
+
+	if len(compiled) == 1 {
+		cr := compiled[0]
+		if cr.path == "" && cr.domainSegments == nil && cr.methods == nil {
+			rt.isCatchAllOnly = true
+			rt.catchAllAction = cr.action
+		}
+	}
+
 	return rt
 }
 
@@ -179,6 +190,10 @@ func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
 // allocating a MatchResult or modifying the request context. Used by the
 // handler fast path when plugins and access logging are disabled.
 func (rt *Router) MatchAction(r *http.Request) string {
+	if rt.isCatchAllOnly {
+		return rt.catchAllAction
+	}
+
 	var hostSegments []string
 	if rt.needsDomainMatch {
 		host := stripPort(r.Host)
@@ -204,8 +219,37 @@ func (rt *Router) MatchAction(r *http.Request) string {
 // Match finds the first matching route and returns the enriched request with
 // MatchResult stored in context, plus the action name.
 func (rt *Router) Match(r *http.Request) (*http.Request, string) {
-	host := stripPort(r.Host)
-	hostSegments := strings.Split(strings.ToLower(host), ".")
+	if rt.isCatchAllOnly {
+		route := rt.routes[0]
+		host := stripPort(r.Host)
+		result := &MatchResult{
+			RouteIndex:    0,
+			Action:        route.action,
+			DomainPattern: route.domain,
+			Domain:        host,
+			Path:          r.URL.Path,
+			Vars:          route.vars,
+		}
+
+		if route.bal != nil {
+			result.Target = route.bal.Next()
+			bal := route.bal
+			target := result.Target
+			result.done = func() { bal.Done(target) }
+		}
+
+		ctx := context.WithValue(r.Context(), matchResultKey, result)
+		return r.WithContext(ctx), route.action
+	}
+
+	var hostSegments []string
+	var host string
+	if rt.needsDomainMatch {
+		host = stripPort(r.Host)
+		hostSegments = strings.Split(strings.ToLower(host), ".")
+	} else {
+		host = stripPort(r.Host)
+	}
 
 	for i, route := range rt.routes {
 		ok, captures, globTail := route.matchDomain(hostSegments)
@@ -348,7 +392,7 @@ func matchSegment(pat, seg string) (bool, string) {
 
 // stripPort removes the port from a host string.
 func stripPort(host string) string {
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
+	if idx := strings.LastIndexByte(host, ':'); idx != -1 {
 		return host[:idx]
 	}
 	return host
