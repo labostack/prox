@@ -1,0 +1,13 @@
+{
+	admin off
+	log {
+		level ERROR
+	}
+}
+
+:9876 {
+	reverse_proxy localhost:9877
+	log {
+		output discard
+	}
+}

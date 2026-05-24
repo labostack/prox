@@ -1,0 +1,13 @@
+http:
+  routers:
+    bench:
+      rule: "PathPrefix(`/`)"
+      service: upstream
+      entryPoints:
+        - web
+
+  services:
+    upstream:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:9877"

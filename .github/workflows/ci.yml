@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,13 +23,17 @@ jobs:
       - name: Build
         run: go build ./cmd/prox
 
-      - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+      - name: Unit tests
+        run: go test -race -count=1 ./internal/...
+
+      - name: Integration tests
+        run: go test -race -count=1 ./tests/...
 
       - name: Vet
         run: go vet ./...
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

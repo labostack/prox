@@ -1,0 +1,12 @@
+{
+  services: {
+    bench: {
+      listen: ":9876",
+      routes: [
+        {
+          action: { type: "proxy", upstream: "localhost:9877" },
+        },
+      ],
+    },
+  },
+}

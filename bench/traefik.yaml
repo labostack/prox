@@ -1,0 +1,12 @@
+entryPoints:
+  web:
+    address: ":9876"
+
+providers:
+  file:
+    filename: bench/traefik_routes.yaml
+
+accessLog: false
+
+log:
+  level: ERROR
