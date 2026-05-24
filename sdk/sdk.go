@@ -62,6 +62,7 @@ func (p *Plugin) OnConnect(h ConnectHandler) {
 }
 
 // SetTargets pushes a flat target list for the given route.
+// Use "*" as routeID to target all routes with balancers.
 func (p *Plugin) SetTargets(routeID string, targets []string) {
 	p.send(pushMsg{
 		Method: "set_targets",
@@ -73,12 +74,35 @@ func (p *Plugin) SetTargets(routeID string, targets []string) {
 }
 
 // SetGroupedTargets pushes grouped targets for the given route.
+// Use "*" as routeID to target all routes with balancers.
 func (p *Plugin) SetGroupedTargets(routeID string, groups map[string][]string) {
 	p.send(pushMsg{
 		Method: "set_targets",
 		Params: pushParams{
 			RouteID: routeID,
 			Groups:  groups,
+		},
+	})
+}
+
+// SetActionTargets pushes a flat target list for all routes using the given action.
+func (p *Plugin) SetActionTargets(action string, targets []string) {
+	p.send(pushMsg{
+		Method: "set_targets",
+		Params: pushParams{
+			Action:  action,
+			Targets: targets,
+		},
+	})
+}
+
+// SetActionGroupedTargets pushes grouped targets for all routes using the given action.
+func (p *Plugin) SetActionGroupedTargets(action string, groups map[string][]string) {
+	p.send(pushMsg{
+		Method: "set_targets",
+		Params: pushParams{
+			Action: action,
+			Groups: groups,
 		},
 	})
 }
@@ -208,7 +232,8 @@ type pushMsg struct {
 }
 
 type pushParams struct {
-	RouteID string              `json:"route_id"`
+	RouteID string              `json:"route_id,omitempty"`
+	Action  string              `json:"action,omitempty"`
 	Targets []string            `json:"targets,omitempty"`
 	Groups  map[string][]string `json:"groups,omitempty"`
 }

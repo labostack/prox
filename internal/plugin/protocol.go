@@ -63,7 +63,8 @@ type Push struct {
 
 // PushParams carries the data for a push message.
 type PushParams struct {
-	RouteID string              `json:"route_id"`
+	RouteID string              `json:"route_id,omitempty"`
+	Action  string              `json:"action,omitempty"` // target routes by action name
 	Targets []string            `json:"targets,omitempty"`
 	Groups  map[string][]string `json:"groups,omitempty"`
 

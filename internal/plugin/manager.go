@@ -24,6 +24,12 @@ type Binding struct {
 	Timeout  time.Duration // per-request plugin call timeout
 }
 
+// RouteInfo describes a route's balancer and action for global target pushes.
+type RouteInfo struct {
+	Action   string
+	Balancer balancer.Balancer
+}
+
 // Manager supervises plugin processes and routes push messages to balancers.
 // It also provides the hook call API (OnRequest, OnResponse, OnConnect)
 // for the HTTP handler and L4 dispatcher.
@@ -31,6 +37,7 @@ type Manager struct {
 	mu        sync.Mutex
 	processes map[string]*managed // keyed by absolute plugin path
 	bindings  []*Binding
+	routes    map[string]*RouteInfo // all routes with balancers (routeID → info)
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 }
@@ -61,12 +68,13 @@ func NewManager() *Manager {
 	}
 }
 
-// Configure sets the current route-to-plugin bindings.
+// Configure sets the current route-to-plugin bindings and global route info.
 // Call Start() after Configure() to spawn processes.
-func (m *Manager) Configure(bindings []*Binding) {
+func (m *Manager) Configure(bindings []*Binding, routes map[string]*RouteInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.bindings = bindings
+	m.routes = routes
 }
 
 // Start spawns all plugin processes and begins processing pushes.
@@ -137,11 +145,12 @@ func (m *Manager) Start(ctx context.Context) error {
 
 // Reconfigure updates bindings and reconfigures running plugins.
 // New plugins are started, removed plugins are stopped.
-func (m *Manager) Reconfigure(bindings []*Binding) {
+func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.bindings = bindings
+	m.routes = routes
 
 	// Determine which plugins are still needed.
 	needed := make(map[string]bool)
@@ -458,43 +467,82 @@ func (m *Manager) handleReady(mg *managed, push Push) {
 // handleSetTargets routes target updates to the appropriate balancer.
 func (m *Manager) handleSetTargets(mg *managed, push Push) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Action-based or wildcard targeting — resolve via routes map.
+	if push.Params.Action != "" || push.Params.RouteID == "*" {
+		m.applyGlobalTargets(mg, push)
+		return
+	}
+
+	// Route-bound targeting — match via bindings.
 	for _, b := range m.bindings {
 		if b.Plugin == mg.path && b.RouteID == push.Params.RouteID {
-			if b.Balancer != nil {
-				if push.Params.Groups != nil {
-					// Grouped targets — route to KeyedBalancer.
-					if kb, ok := b.Balancer.(balancer.KeyedBalancer); ok {
-						kb.SwapGroupedTargets(push.Params.Groups)
-						total := 0
-						for _, t := range push.Params.Groups {
-							total += len(t)
-						}
-						slog.Info("plugin updated grouped targets",
-							"plugin", filepath.Base(mg.path),
-							"route", push.Params.RouteID,
-							"groups", len(push.Params.Groups),
-							"targets", total,
-						)
-					} else {
-						slog.Warn("plugin sent grouped targets but balancer is not keyed",
-							"plugin", filepath.Base(mg.path),
-							"route", push.Params.RouteID,
-						)
-					}
-				} else {
-					// Flat targets.
-					b.Balancer.SwapTargets(push.Params.Targets)
-					slog.Info("plugin updated targets",
-						"plugin", filepath.Base(mg.path),
-						"route", push.Params.RouteID,
-						"targets", len(push.Params.Targets),
-					)
-				}
-			}
+			m.applyTargets(mg, push.Params.RouteID, b.Balancer, push)
 			break
 		}
 	}
-	m.mu.Unlock()
+}
+
+// applyGlobalTargets pushes targets to routes matched by action name or wildcard.
+func (m *Manager) applyGlobalTargets(mg *managed, push Push) {
+	count := 0
+	for routeID, ri := range m.routes {
+		if ri.Balancer == nil {
+			continue
+		}
+		if push.Params.Action != "" && ri.Action != push.Params.Action {
+			continue
+		}
+		m.applyTargets(mg, routeID, ri.Balancer, push)
+		count++
+	}
+
+	if count == 0 {
+		target := push.Params.RouteID
+		if push.Params.Action != "" {
+			target = push.Params.Action
+		}
+		slog.Warn("plugin set_targets matched no routes",
+			"plugin", filepath.Base(mg.path),
+			"target", target,
+		)
+	}
+}
+
+// applyTargets applies flat or grouped targets to a single balancer.
+func (m *Manager) applyTargets(mg *managed, routeID string, bal balancer.Balancer, push Push) {
+	if bal == nil {
+		return
+	}
+
+	if push.Params.Groups != nil {
+		if kb, ok := bal.(balancer.KeyedBalancer); ok {
+			kb.SwapGroupedTargets(push.Params.Groups)
+			total := 0
+			for _, t := range push.Params.Groups {
+				total += len(t)
+			}
+			slog.Info("plugin updated grouped targets",
+				"plugin", filepath.Base(mg.path),
+				"route", routeID,
+				"groups", len(push.Params.Groups),
+				"targets", total,
+			)
+		} else {
+			slog.Warn("plugin sent grouped targets but balancer is not keyed",
+				"plugin", filepath.Base(mg.path),
+				"route", routeID,
+			)
+		}
+	} else {
+		bal.SwapTargets(push.Params.Targets)
+		slog.Info("plugin updated targets",
+			"plugin", filepath.Base(mg.path),
+			"route", routeID,
+			"targets", len(push.Params.Targets),
+		)
+	}
 }
 
 // restartPlugin attempts to restart a crashed plugin with exponential backoff.
