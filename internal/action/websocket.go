@@ -47,9 +47,9 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 
 	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
-		slog.Error("websocket upstream dial failed",
+		slog.Warn("websocket dial failed",
 			"upstream", host,
-			"error", err,
+			"err", err,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
@@ -80,8 +80,8 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 
 	// Write the upgrade request directly to the upstream connection.
 	if err := outReq.Write(upstream); err != nil {
-		slog.Error("websocket upstream write failed",
-			"error", err,
+		slog.Warn("websocket write failed",
+			"err", err,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
@@ -97,18 +97,20 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 	client, clientBuf, err := hj.Hijack()
 	if err != nil {
 		slog.Error("websocket hijack failed",
-			"error", err,
+			"err", err,
 		)
 		return
 	}
 	defer client.Close()
 
 	// Read the upstream response and forward to client.
-	upstreamBuf := bufio.NewReader(upstream)
+	upstreamBuf := bufioReaderPool.Get().(*bufio.Reader)
+	upstreamBuf.Reset(upstream)
+	defer bufioReaderPool.Put(upstreamBuf)
 	resp, err := http.ReadResponse(upstreamBuf, outReq)
 	if err != nil {
-		slog.Error("websocket upstream response read failed",
-			"error", err,
+		slog.Warn("websocket response failed",
+			"err", err,
 		)
 		return
 	}
@@ -116,8 +118,8 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 
 	// Write the raw response to the client.
 	if err := resp.Write(client); err != nil {
-		slog.Error("websocket response write to client failed",
-			"error", err,
+		slog.Warn("websocket client write failed",
+			"err", err,
 		)
 		return
 	}

@@ -187,7 +187,7 @@ func skipBuild(binPath string, srcMod time.Time) bool {
 		return false
 	}
 	if binInfo.ModTime().After(srcMod) {
-		slog.Debug("plugin binary up to date, skipping build",
+		slog.Debug("plugin up to date",
 			"plugin", filepath.Base(binPath),
 		)
 		return true
@@ -211,11 +211,11 @@ func runBuild(dir string, args ...string) error {
 
 	goModPath := filepath.Join(dir, "go.mod")
 	if _, statErr := os.Stat(goModPath); statErr == nil {
-		slog.Debug("plugin build failed; attempting to resolve dependencies", "dir", dir, "error", err)
+		slog.Warn("plugin build failed, resolving dependencies", "dir", dir, "err", err)
 		if tidyErr := tidyPluginDir(dir); tidyErr != nil {
-			slog.Debug("failed to tidy plugin dependencies", "dir", dir, "error", tidyErr)
+			slog.Warn("plugin dependency resolution failed", "dir", dir, "err", tidyErr)
 		} else {
-			slog.Info("retrying plugin build after resolving dependencies", "dir", dir)
+			slog.Info("retrying plugin build", "dir", dir)
 			cmdRetry := exec.Command("go", append([]string{"build"}, args...)...)
 			cmdRetry.Dir = dir
 			cmdRetry.Stderr = os.Stderr
@@ -231,7 +231,7 @@ func runBuild(dir string, args ...string) error {
 
 // tidyPluginDir runs `go mod tidy` in the plugin directory if go.mod is present.
 func tidyPluginDir(dir string) error {
-	slog.Info("tidying plugin dependencies", "dir", dir)
+	slog.Debug("tidying plugin dependencies", "dir", dir)
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
@@ -288,8 +288,8 @@ func (p *Process) readLoop() {
 		var push Push
 		if err := json.Unmarshal(line, &push); err != nil {
 			slog.Warn("plugin sent invalid JSON",
-				"plugin", p.path,
-				"error", err,
+				"plugin", filepath.Base(p.path),
+				"err", err,
 				"line", string(line),
 			)
 			continue
@@ -303,8 +303,8 @@ func (p *Process) readLoop() {
 		select {
 		case p.pushCh <- push:
 		default:
-			slog.Warn("plugin push channel full, dropping message",
-				"plugin", p.path,
+			slog.Warn("plugin push buffer full",
+				"plugin", filepath.Base(p.path),
 				"method", push.Method,
 			)
 		}
@@ -312,8 +312,8 @@ func (p *Process) readLoop() {
 
 	if err := p.scanner.Err(); err != nil {
 		slog.Debug("plugin stdout closed",
-			"plugin", p.path,
-			"error", err,
+			"plugin", filepath.Base(p.path),
+			"err", err,
 		)
 	}
 
@@ -322,14 +322,18 @@ func (p *Process) readLoop() {
 }
 
 // logWriter forwards plugin stderr lines to slog.
+// Each line is logged individually as the message to keep output readable.
 type logWriter struct {
 	plugin string
 }
 
 func (w *logWriter) Write(p []byte) (int, error) {
-	slog.Debug("plugin stderr",
-		"plugin", w.plugin,
-		"output", string(p),
-	)
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		slog.Debug(line, "plugin", w.plugin)
+	}
 	return len(p), nil
 }

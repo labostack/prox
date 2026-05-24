@@ -96,16 +96,26 @@ type LeastConn struct {
 type lcPool struct {
 	targets []string
 	conns   []atomic.Int64
+	index   map[string]int // target → slice index for O(1) lookup
 }
 
 // NewLeastConn creates a least-connections balancer.
 func NewLeastConn(targets []string) *LeastConn {
 	lc := &LeastConn{}
-	lc.pool.Store(&lcPool{
+	lc.pool.Store(newLCPool(targets))
+	return lc
+}
+
+func newLCPool(targets []string) *lcPool {
+	idx := make(map[string]int, len(targets))
+	for i, t := range targets {
+		idx[t] = i
+	}
+	return &lcPool{
 		targets: targets,
 		conns:   make([]atomic.Int64, len(targets)),
-	})
-	return lc
+		index:   idx,
+	}
 }
 
 // Next returns the target with the fewest active connections and
@@ -136,11 +146,8 @@ func (lc *LeastConn) Next() string {
 // Done decrements the active connection counter for the target.
 func (lc *LeastConn) Done(target string) {
 	p := lc.pool.Load()
-	for i, t := range p.targets {
-		if t == target {
-			p.conns[i].Add(-1)
-			return
-		}
+	if i, ok := p.index[target]; ok {
+		p.conns[i].Add(-1)
 	}
 }
 
@@ -150,20 +157,15 @@ func (lc *LeastConn) SwapTargets(targets []string) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
-	lc.pool.Store(&lcPool{
-		targets: targets,
-		conns:   make([]atomic.Int64, len(targets)),
-	})
+	lc.pool.Store(newLCPool(targets))
 }
 
 // Conns returns the current active connection count for a target.
 // Intended for testing and diagnostics only.
 func (lc *LeastConn) Conns(target string) int64 {
 	p := lc.pool.Load()
-	for i, t := range p.targets {
-		if t == target {
-			return p.conns[i].Load()
-		}
+	if i, ok := p.index[target]; ok {
+		return p.conns[i].Load()
 	}
 	return 0
 }
@@ -188,7 +190,8 @@ type Grouped struct {
 }
 
 type groupedMap struct {
-	m map[string]Balancer
+	m           map[string]Balancer
+	targetGroup map[string]string // target → group key for O(1) Done() routing
 }
 
 // NewGrouped creates a grouped balancer wrapping an inner flat balancer.
@@ -221,8 +224,8 @@ func (g *Grouped) NextKeyed(key string) string {
 // Checks grouped sub-balancers first, then falls back to the inner balancer.
 func (g *Grouped) Done(target string) {
 	if gm := g.groups.Load(); gm != nil {
-		for _, bal := range gm.m {
-			bal.Done(target)
+		if key, ok := gm.targetGroup[target]; ok {
+			gm.m[key].Done(target)
 		}
 		return
 	}
@@ -257,7 +260,14 @@ func (g *Grouped) SwapGroupedTargets(groups map[string][]string) {
 		newMap[key] = newByStrategy(g.strategy, targets)
 	}
 
-	g.groups.Store(&groupedMap{m: newMap})
+	tg := make(map[string]string, len(groups)*2)
+	for key, targets := range groups {
+		for _, t := range targets {
+			tg[t] = key
+		}
+	}
+
+	g.groups.Store(&groupedMap{m: newMap, targetGroup: tg})
 }
 
 // newByStrategy creates a flat balancer of the given type.

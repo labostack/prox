@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dortanes/prox/internal/balancer"
@@ -30,6 +31,16 @@ type RouteInfo struct {
 	Balancer balancer.Balancer
 }
 
+// hookIndex is an immutable lookup structure for the request hot path.
+// Rebuilt on configure/reconfigure/plugin-ready (rare), loaded atomically
+// on every request (frequent). Eliminates mutex contention on the hot path.
+type hookIndex struct {
+	// callers maps routeID → hook → callers for that hook.
+	callers map[string]map[string][]*Caller
+	// timeouts maps routeID → plugin call timeout.
+	timeouts map[string]time.Duration
+}
+
 // Manager supervises plugin processes and routes push messages to balancers.
 // It also provides the hook call API (OnRequest, OnResponse, OnConnect)
 // for the HTTP handler and L4 dispatcher.
@@ -40,6 +51,7 @@ type Manager struct {
 	routes    map[string]*RouteInfo // all routes with balancers (routeID → info)
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	index     atomic.Pointer[hookIndex] // lock-free hot-path lookup
 }
 
 // managed wraps a plugin process with restart state and hook caller.
@@ -75,6 +87,7 @@ func (m *Manager) Configure(bindings []*Binding, routes map[string]*RouteInfo) {
 	defer m.mu.Unlock()
 	m.bindings = bindings
 	m.routes = routes
+	m.rebuildIndexLocked()
 }
 
 // Start spawns all plugin processes and begins processing pushes.
@@ -97,9 +110,9 @@ func (m *Manager) Start(ctx context.Context) error {
 
 		proc, err := startProcess(pluginPath)
 		if err != nil {
-			slog.Error("failed to start plugin",
-				"plugin", pluginPath,
-				"error", err,
+			slog.Error("plugin start failed",
+				"plugin", filepath.Base(pluginPath),
+				"err", err,
 			)
 			continue
 		}
@@ -124,10 +137,10 @@ func (m *Manager) Start(ctx context.Context) error {
 					Match:   b.Match,
 				},
 			}); err != nil {
-				slog.Error("failed to configure plugin",
+				slog.Error("plugin configure failed",
 					"plugin", filepath.Base(pluginPath),
 					"route", b.RouteID,
-					"error", err,
+					"err", err,
 				)
 			}
 		}
@@ -161,7 +174,7 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 	// Stop plugins no longer referenced.
 	for path, mg := range m.processes {
 		if !needed[path] {
-			slog.Info("stopping unreferenced plugin",
+			slog.Info("plugin stopped",
 				"plugin", filepath.Base(path),
 			)
 			if mg.caller != nil {
@@ -179,9 +192,9 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 		if !exists {
 			proc, err := startProcess(pluginPath)
 			if err != nil {
-				slog.Error("failed to start plugin on reconfigure",
-					"plugin", pluginPath,
-					"error", err,
+				slog.Error("plugin start failed",
+					"plugin", filepath.Base(pluginPath),
+					"err", err,
 				)
 				continue
 			}
@@ -214,14 +227,16 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 					Match:   b.Match,
 				},
 			}); err != nil {
-				slog.Error("failed to reconfigure plugin",
+				slog.Error("plugin configure failed",
 					"plugin", filepath.Base(pluginPath),
 					"route", b.RouteID,
-					"error", err,
+					"err", err,
 				)
 			}
 		}
 	}
+
+	m.rebuildIndexLocked()
 }
 
 // Stop gracefully terminates all plugin processes.
@@ -243,31 +258,27 @@ func (m *Manager) Stop() {
 }
 
 // HasHook returns true if any plugin bound to the route supports the given hook.
+// Lock-free: reads from the atomic hook index.
 func (m *Manager) HasHook(routeID string, hook string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for _, b := range m.bindings {
-		if b.RouteID != routeID {
-			continue
-		}
-		mg, ok := m.processes[b.Plugin]
-		if ok && mg.hasHook(hook) {
-			return true
-		}
+	idx := m.index.Load()
+	if idx == nil {
+		return false
 	}
-	return false
+	hooks := idx.callers[routeID]
+	if hooks == nil {
+		return false
+	}
+	return len(hooks[hook]) > 0
 }
 
 // OnRequest calls the on_request hook for all plugins bound to the route.
 // Sequential execution, short-circuit on first deny.
 func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInfo) (*AuthorizeResult, error) {
-	callers := m.callersForHook(routeID, HookOnRequest)
+	callers, timeout := m.lookupHook(routeID, HookOnRequest)
 	if len(callers) == 0 {
 		return &AuthorizeResult{Allow: true}, nil
 	}
 
-	timeout := m.timeoutForRoute(routeID)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -295,12 +306,11 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 
 // OnResponse calls the on_response hook for all plugins bound to the route.
 func (m *Manager) OnResponse(ctx context.Context, routeID string, req *RequestInfo, resp *UpstreamResponseInfo) (*ResponseModResult, error) {
-	callers := m.callersForHook(routeID, HookOnResponse)
+	callers, timeout := m.lookupHook(routeID, HookOnResponse)
 	if len(callers) == 0 {
 		return &ResponseModResult{}, nil
 	}
 
-	timeout := m.timeoutForRoute(routeID)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -330,12 +340,11 @@ func (m *Manager) OnResponse(ctx context.Context, routeID string, req *RequestIn
 // OnConnect calls the on_connect hook for all plugins bound to the route.
 // Sequential execution, short-circuit on first deny.
 func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo) (*ConnResult, error) {
-	callers := m.callersForHook(routeID, HookOnConnect)
+	callers, timeout := m.lookupHook(routeID, HookOnConnect)
 	if len(callers) == 0 {
 		return &ConnResult{Allow: true}, nil
 	}
 
-	timeout := m.timeoutForRoute(routeID)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -352,36 +361,59 @@ func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo)
 	return &ConnResult{Allow: true}, nil
 }
 
-// callersForHook returns callers for all plugins bound to the route that support the hook.
-func (m *Manager) callersForHook(routeID, hook string) []*Caller {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var callers []*Caller
-	for _, b := range m.bindings {
-		if b.RouteID != routeID {
-			continue
-		}
-		mg, ok := m.processes[b.Plugin]
-		if !ok || mg.caller == nil || !mg.hasHook(hook) {
-			continue
-		}
-		callers = append(callers, mg.caller)
+// lookupHook returns callers and timeout for a route+hook combination.
+// Lock-free: reads from the atomic hook index.
+func (m *Manager) lookupHook(routeID, hook string) ([]*Caller, time.Duration) {
+	idx := m.index.Load()
+	if idx == nil {
+		return nil, defaultCallTimeout
 	}
-	return callers
+	hooks := idx.callers[routeID]
+	if hooks == nil {
+		return nil, defaultCallTimeout
+	}
+	timeout := idx.timeouts[routeID]
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	return hooks[hook], timeout
 }
 
-// timeoutForRoute returns the plugin timeout for the given route.
-func (m *Manager) timeoutForRoute(routeID string) time.Duration {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// rebuildIndexLocked builds a new hookIndex from current bindings and processes.
+// Must be called with m.mu held. The resulting index is stored atomically
+// and subsequent hot-path reads are lock-free.
+func (m *Manager) rebuildIndexLocked() {
+	idx := &hookIndex{
+		callers:  make(map[string]map[string][]*Caller),
+		timeouts: make(map[string]time.Duration),
+	}
 
 	for _, b := range m.bindings {
-		if b.RouteID == routeID && b.Timeout > 0 {
-			return b.Timeout
+		// Record timeout.
+		if b.Timeout > 0 {
+			if _, ok := idx.timeouts[b.RouteID]; !ok {
+				idx.timeouts[b.RouteID] = b.Timeout
+			}
+		}
+
+		// Resolve managed process and its caller.
+		mg, ok := m.processes[b.Plugin]
+		if !ok || mg.caller == nil {
+			continue
+		}
+
+		// Register caller for each hook it supports.
+		for _, hook := range mg.hooks {
+			hooks := idx.callers[b.RouteID]
+			if hooks == nil {
+				hooks = make(map[string][]*Caller)
+				idx.callers[b.RouteID] = hooks
+			}
+			hooks[hook] = append(hooks[hook], mg.caller)
 		}
 	}
-	return defaultCallTimeout
+
+	m.index.Store(idx)
 }
 
 // processPushes reads from the plugin's push channel and dispatches
@@ -421,7 +453,7 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 		m.handleReady(mg, push)
 
 	default:
-		slog.Debug("unknown plugin push method",
+		slog.Warn("plugin unknown push method",
 			"plugin", filepath.Base(mg.path),
 			"method", push.Method,
 		)
@@ -431,7 +463,7 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 // handleReady processes a plugin's capability declaration.
 func (m *Manager) handleReady(mg *managed, push Push) {
 	if push.Params.Socket == "" {
-		slog.Warn("plugin sent ready without socket path",
+		slog.Warn("plugin ready without socket",
 			"plugin", filepath.Base(mg.path),
 		)
 		return
@@ -457,9 +489,13 @@ func (m *Manager) handleReady(mg *managed, push Push) {
 
 	mg.caller = NewCaller(push.Params.Socket, defaultPoolSize, timeout)
 
-	slog.Info("plugin ready with hooks",
+	// Rebuild the hot-path index now that this plugin has declared its hooks.
+	m.mu.Lock()
+	m.rebuildIndexLocked()
+	m.mu.Unlock()
+
+	slog.Info("plugin ready",
 		"plugin", filepath.Base(mg.path),
-		"socket", push.Params.Socket,
 		"hooks", push.Params.Hooks,
 	)
 }
@@ -503,7 +539,7 @@ func (m *Manager) applyGlobalTargets(mg *managed, push Push) {
 		if push.Params.Action != "" {
 			target = push.Params.Action
 		}
-		slog.Warn("plugin set_targets matched no routes",
+		slog.Warn("plugin targets matched no routes",
 			"plugin", filepath.Base(mg.path),
 			"target", target,
 		)
@@ -523,21 +559,21 @@ func (m *Manager) applyTargets(mg *managed, routeID string, bal balancer.Balance
 			for _, t := range push.Params.Groups {
 				total += len(t)
 			}
-			slog.Info("plugin updated grouped targets",
+			slog.Debug("plugin updated grouped targets",
 				"plugin", filepath.Base(mg.path),
 				"route", routeID,
 				"groups", len(push.Params.Groups),
 				"targets", total,
 			)
 		} else {
-			slog.Warn("plugin sent grouped targets but balancer is not keyed",
+			slog.Warn("plugin grouped targets ignored: balancer not keyed",
 				"plugin", filepath.Base(mg.path),
 				"route", routeID,
 			)
 		}
 	} else {
 		bal.SwapTargets(push.Params.Targets)
-		slog.Info("plugin updated targets",
+		slog.Debug("plugin updated targets",
 			"plugin", filepath.Base(mg.path),
 			"route", routeID,
 			"targets", len(push.Params.Targets),
@@ -553,7 +589,7 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 		delay = restartMaxDelay
 	}
 
-	slog.Warn("plugin process exited, restarting",
+	slog.Warn("plugin exited, restarting",
 		"plugin", filepath.Base(mg.path),
 		"attempt", mg.restart,
 		"delay", delay,
@@ -568,10 +604,10 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 
 	proc, err := startProcess(mg.path)
 	if err != nil {
-		slog.Error("failed to restart plugin",
-			"plugin", mg.path,
+		slog.Error("plugin restart failed",
+			"plugin", filepath.Base(mg.path),
 			"attempt", mg.restart,
-			"error", err,
+			"err", err,
 		)
 		mg.proc = nil
 		return

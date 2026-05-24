@@ -22,18 +22,21 @@ import (
 // When the upstream contains template placeholders (e.g. {target}),
 // they are resolved per-request from the route's balancer and set variables.
 type Proxy struct {
-	proxy  *httputil.ReverseProxy // static mode
-	target *url.URL
+	proxy  *httputil.ReverseProxy // shared for both static and dynamic modes
+	fast   *fastStaticProxy       // fast path for static upstream without custom headers
+	target *url.URL               // static mode: fixed upstream URL
 
-	upstreamTpl   string             // dynamic mode template
-	transport     http.RoundTripper   // h1 or h2 transport
-	flushInterval time.Duration
-	stream        bool // use raw HTTP tunnel for streaming
+	upstreamTpl   string           // dynamic mode template (empty for static)
+	stream        bool             // use raw HTTP tunnel for streaming
 
 	headers  map[string]string
 	timeout  time.Duration
 	fallback http.Handler // invoked when the primary action fails
 }
+
+// dynTargetKey is the context key for passing the resolved target URL
+// to the shared ReverseProxy's Rewrite func in dynamic mode.
+type dynTargetKey struct{}
 
 // NewProxy creates a reverse proxy handler for the given action config.
 // svcCfg provides optional service-level transport tuning.
@@ -66,8 +69,40 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 	// Dynamic mode: upstream contains template placeholders.
 	if strings.Contains(act.Upstream, "{") {
 		p.upstreamTpl = act.Upstream
-		p.transport = transport
-		p.flushInterval = flushInterval
+
+		// Build a shared ReverseProxy that reads the target from request context.
+		headersRef := headers
+		proxy := &httputil.ReverseProxy{
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				target, _ := pr.In.Context().Value(dynTargetKey{}).(*url.URL)
+				if target != nil {
+					pr.SetURL(target)
+				}
+				pr.SetXForwarded()
+				for k, v := range headersRef {
+					if http.CanonicalHeaderKey(k) == "Host" {
+						pr.Out.Host = v
+					} else {
+						pr.Out.Header.Set(k, v)
+					}
+				}
+			},
+			FlushInterval: flushInterval,
+			BufferPool:    proxyBufPool{},
+		}
+		proxy.Transport = transport
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			slog.Warn("upstream error",
+				"path", r.URL.Path,
+				"err", err,
+			)
+			if p.fallback != nil {
+				p.fallback.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		}
+		p.proxy = proxy
 		return p, nil
 	}
 
@@ -90,13 +125,14 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 			}
 		},
 		FlushInterval: flushInterval,
+		BufferPool:    proxyBufPool{},
 	}
 	proxy.Transport = transport
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		slog.Error("upstream error",
+		slog.Warn("upstream error",
 			"upstream", act.Upstream,
 			"path", r.URL.Path,
-			"error", err,
+			"err", err,
 		)
 		if p.fallback != nil {
 			p.fallback.ServeHTTP(w, r)
@@ -107,6 +143,15 @@ func NewProxy(act *config.Action, svcCfg *config.ServerConfig) (*Proxy, error) {
 
 	p.proxy = proxy
 	p.target = target
+
+	// Enable fast path when no custom headers and no streaming.
+	if len(headers) == 0 && !act.Stream {
+		p.fast = &fastStaticProxy{
+			target:    target,
+			transport: transport,
+		}
+	}
+
 	return p, nil
 }
 
@@ -123,12 +168,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveTunnel(w, r, p.target, p.headers, p.timeout)
 		return
 	}
+	if p.fast != nil {
+		p.fast.ServeHTTP(w, r)
+		return
+	}
 	p.proxy.ServeHTTP(w, r)
 }
 
 // SetFallback sets the handler invoked when the primary action fails.
 func (p *Proxy) SetFallback(h http.Handler) {
 	p.fallback = h
+	if p.fast != nil {
+		p.fast.fallback = h
+	}
 }
 
 // serveDynamic resolves template placeholders and proxies the request.
@@ -137,14 +189,14 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	needsTarget := strings.Contains(p.upstreamTpl, "{target}")
 	if needsTarget && (match == nil || match.Target == "") {
 		if p.fallback != nil {
-			slog.Debug("no target, using fallback",
+			slog.Debug("no target, falling back",
 				"host", r.Host,
 				"path", r.URL.Path,
 			)
 			p.fallback.ServeHTTP(w, r)
 			return
 		}
-		slog.Error("no target selected",
+		slog.Warn("no target available",
 			"upstream_tpl", p.upstreamTpl,
 			"host", r.Host,
 			"path", r.URL.Path,
@@ -159,15 +211,15 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	resolved := resolveTemplate(p.upstreamTpl, match)
 	target, err := parseUpstream(resolved)
 	if err != nil {
-		slog.Error("failed to parse resolved upstream",
+		slog.Error("invalid upstream URL",
 			"upstream", resolved,
-			"error", err,
+			"err", err,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 
-	slog.Debug("proxying dynamic request",
+	slog.Debug("proxy",
 		"host", r.Host,
 		"path", r.URL.Path,
 		"upstream", resolved,
@@ -182,36 +234,9 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	headers := p.headers
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-			pr.SetXForwarded()
-			for k, v := range headers {
-				if http.CanonicalHeaderKey(k) == "Host" {
-					pr.Out.Host = v
-				} else {
-					pr.Out.Header.Set(k, v)
-				}
-			}
-		},
-		FlushInterval: p.flushInterval,
-	}
-	proxy.Transport = p.transport
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		slog.Error("upstream error",
-			"upstream", resolved,
-			"path", r.URL.Path,
-			"error", err,
-		)
-		if p.fallback != nil {
-			p.fallback.ServeHTTP(w, r)
-			return
-		}
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-	}
-
-	proxy.ServeHTTP(w, r)
+	// Pass resolved target via context to the shared ReverseProxy.
+	ctx := context.WithValue(r.Context(), dynTargetKey{}, target)
+	p.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // parseUpstream normalizes the upstream address into a URL.
@@ -265,9 +290,12 @@ func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, resp
 		}
 	}
 
-	maxIdle := 100
-	maxIdlePerHost := 10
+	maxIdle := 256
+	maxIdlePerHost := 128
 	tlsHandshake := 10 * time.Second
+	readBuf := 64 * 1024
+	writeBuf := 64 * 1024
+	disableCompression := true // better default for reverse proxy
 	if svcCfg != nil {
 		if svcCfg.MaxIdleConns > 0 {
 			maxIdle = svcCfg.MaxIdleConns
@@ -278,6 +306,15 @@ func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, resp
 		if svcCfg.TLSHandshakeTimeout.Duration > 0 {
 			tlsHandshake = svcCfg.TLSHandshakeTimeout.Duration
 		}
+		if svcCfg.ReadBufferSize > 0 {
+			readBuf = svcCfg.ReadBufferSize
+		}
+		if svcCfg.WriteBufferSize > 0 {
+			writeBuf = svcCfg.WriteBufferSize
+		}
+		if svcCfg.DisableCompression != nil {
+			disableCompression = *svcCfg.DisableCompression
+		}
 	}
 
 	return &http.Transport{
@@ -287,6 +324,10 @@ func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, resp
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: responseHeaderTimeout,
 		TLSHandshakeTimeout:   tlsHandshake,
+		DisableCompression:    disableCompression,
+		WriteBufferSize:       writeBuf,
+		ReadBufferSize:        readBuf,
+		ForceAttemptHTTP2:     false,
 	}
 }
 

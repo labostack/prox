@@ -37,9 +37,9 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 
 	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
 	if err != nil {
-		slog.Error("tunnel upstream dial failed",
+		slog.Warn("tunnel dial failed",
 			"upstream", host,
-			"error", err,
+			"err", err,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
@@ -83,15 +83,16 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 	}()
 
 	// Read the upstream response.
-	resp, err := http.ReadResponse(
-		bufio.NewReader(upstream),
-		outReq,
-	)
+	br := bufioReaderPool.Get().(*bufio.Reader)
+	br.Reset(upstream)
+	defer bufioReaderPool.Put(br)
+
+	resp, err := http.ReadResponse(br, outReq)
 	if err != nil {
-		slog.Error("tunnel upstream response failed",
+		slog.Warn("tunnel response failed",
 			"upstream", host,
 			"path", r.URL.Path,
-			"error", err,
+			"err", err,
 		)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
@@ -111,7 +112,9 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 		f.Flush()
 	}
 
-	buf := make([]byte, 32*1024)
+	bufp := copyBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer copyBufPool.Put(bufp)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {

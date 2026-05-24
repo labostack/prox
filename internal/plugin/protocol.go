@@ -6,7 +6,12 @@
 // request-response hooks (on_request, on_response, on_connect).
 package plugin
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"bytes"
+	"sync"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Method constants for the stdin/stdout JSON protocol.
 const (
@@ -142,11 +147,25 @@ type ConnResult struct {
 	Allow bool `msgpack:"ok"`
 }
 
+// envelopeBufPool reuses buffers for MarshalEnvelope to reduce allocations.
+var envelopeBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
 // MarshalEnvelope creates a framed envelope for the given hook type and data.
+// Uses a pooled buffer to avoid intermediate allocations.
 func MarshalEnvelope(hook HookType, data interface{}) ([]byte, error) {
-	d, err := msgpack.Marshal(data)
-	if err != nil {
+	buf := envelopeBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer envelopeBufPool.Put(buf)
+
+	// Encode the inner data into the pooled buffer.
+	enc := msgpack.NewEncoder(buf)
+	if err := enc.Encode(data); err != nil {
 		return nil, err
 	}
-	return msgpack.Marshal(&Envelope{Hook: hook, Data: d})
+
+	// Encode the envelope with the data bytes.
+	return msgpack.Marshal(&Envelope{Hook: hook, Data: buf.Bytes()})
 }
+

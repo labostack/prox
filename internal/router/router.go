@@ -8,6 +8,7 @@ package router
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/dortanes/prox/internal/balancer"
@@ -44,6 +45,11 @@ func (m *MatchResult) Done() {
 	}
 }
 
+// RouteID returns a compact identifier for this route (e.g. "web:0").
+func (m *MatchResult) RouteID(service string) string {
+	return service + ":" + strconv.Itoa(m.RouteIndex)
+}
+
 // GetMatchResult retrieves the MatchResult from request context.
 func GetMatchResult(r *http.Request) *MatchResult {
 	v, _ := r.Context().Value(matchResultKey).(*MatchResult)
@@ -52,7 +58,8 @@ func GetMatchResult(r *http.Request) *MatchResult {
 
 // Router holds compiled routes for a single service.
 type Router struct {
-	routes []*compiledRoute
+	routes           []*compiledRoute
+	needsDomainMatch bool // true if any route has domain-based matching
 }
 
 // compiledRoute is an optimized, pre-processed representation of a config route.
@@ -122,7 +129,14 @@ func New(routes []*config.Route) *Router {
 		compiled = append(compiled, cr)
 	}
 
-	return &Router{routes: compiled}
+	rt := &Router{routes: compiled}
+	for _, cr := range compiled {
+		if cr.domainSegments != nil {
+			rt.needsDomainMatch = true
+			break
+		}
+	}
+	return rt
 }
 
 // RouteBalancer returns the balancer instance for the route at the given index.
@@ -161,11 +175,40 @@ func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
 
 // Match finds the first route matching the given request.
 // Returns the action name (empty if no match) and injects MatchResult into context.
+// MatchAction returns only the action name for the matching route, without
+// allocating a MatchResult or modifying the request context. Used by the
+// handler fast path when plugins and access logging are disabled.
+func (rt *Router) MatchAction(r *http.Request) string {
+	var hostSegments []string
+	if rt.needsDomainMatch {
+		host := stripPort(r.Host)
+		hostSegments = strings.Split(strings.ToLower(host), ".")
+	}
+
+	for _, route := range rt.routes {
+		ok, _, _ := route.matchDomain(hostSegments)
+		if !ok {
+			continue
+		}
+		if !route.matchPath(r.URL.Path) {
+			continue
+		}
+		if !route.matchMethod(r.Method) {
+			continue
+		}
+		return route.action
+	}
+	return ""
+}
+
+// Match finds the first matching route and returns the enriched request with
+// MatchResult stored in context, plus the action name.
 func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	host := stripPort(r.Host)
+	hostSegments := strings.Split(strings.ToLower(host), ".")
 
 	for i, route := range rt.routes {
-		ok, captures, globTail := route.matchDomain(host)
+		ok, captures, globTail := route.matchDomain(hostSegments)
 		if !ok {
 			continue
 		}
@@ -234,12 +277,10 @@ func (cr *compiledRoute) matchMethod(method string) bool {
 //   - globTail: the suffix matched by "**" (empty when no glob)
 //
 // nil domainSegments matches all hosts (returns true, nil, "").
-func (cr *compiledRoute) matchDomain(host string) (bool, []string, string) {
+func (cr *compiledRoute) matchDomain(hostSegments []string) (bool, []string, string) {
 	if cr.domainSegments == nil {
 		return true, nil, ""
 	}
-
-	hostSegments := strings.Split(strings.ToLower(host), ".")
 
 	if cr.domainGlob {
 		// "**" was stripped — remaining segments are the prefix.
