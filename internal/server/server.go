@@ -731,13 +731,17 @@ func releaseCapture(c *logger.ResponseCapture) {
 
 // swappableHandler wraps an atomic pointer to a routingSnapshot.
 type swappableHandler struct {
-	name    string
-	current atomic.Pointer[routingSnapshot]
-	plugins *plugin.Manager // nil when no plugins configured
+	name         string
+	current      atomic.Pointer[routingSnapshot]
+	plugins      *plugin.Manager          // nil when no plugins configured
+	groupBuckets *throttle.GroupRegistry   // shared group speed buckets
 }
 
 func newSwappableHandler(name string, rt *router.Router, registry *action.Registry, plugins *plugin.Manager) *swappableHandler {
 	h := &swappableHandler{name: name, plugins: plugins}
+	if plugins != nil {
+		h.groupBuckets = plugins.GroupBuckets()
+	}
 	h.current.Store(&routingSnapshot{router: rt, registry: registry})
 	return h
 }
@@ -882,7 +886,11 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Apply speed limiting.
 	if mr := router.GetMatchResult(r); mr != nil {
-		w, r = h.applySpeedLimit(w, r, mr, pluginSpeedLimit)
+		var cleanup func()
+		w, r, cleanup = h.applySpeedLimit(w, r, mr, pluginSpeedLimit)
+		if cleanup != nil {
+			defer cleanup()
+		}
 	}
 
 	var handler http.Handler
@@ -1273,15 +1281,18 @@ func (c *limitConn) Close() error {
 // applySpeedLimit resolves effective download/upload speed limits from three
 // sources (config route, plugin push, plugin response) and wraps the
 // ResponseWriter and/or request Body accordingly. Returns the (possibly wrapped)
-// writer and request. No-op when no speed limits apply.
+// writer, request, and an optional cleanup function. The cleanup function must
+// be called when the connection ends (releases shared group buckets).
+// No-op when no speed limits apply.
 func (h *swappableHandler) applySpeedLimit(
 	w http.ResponseWriter,
 	r *http.Request,
 	mr *router.MatchResult,
 	pluginSpeed *plugin.SpeedLimit,
-) (http.ResponseWriter, *http.Request) {
+) (http.ResponseWriter, *http.Request, func()) {
 
 	var downBuckets, upBuckets []*throttle.Bucket
+	var cleanup func()
 
 	// 1. Config-level shared buckets.
 	if mr.DownloadBucket != nil {
@@ -1316,17 +1327,35 @@ func (h *swappableHandler) applySpeedLimit(
 		}
 	}
 
-	// Create per-connection buckets from the resolved rates.
-	if perConnDown > 0 {
-		downBuckets = append(downBuckets, throttle.NewBucket(perConnDown))
+	// 3. Create buckets from the resolved rates.
+	groupKey := ""
+	if pluginSpeed != nil {
+		groupKey = pluginSpeed.GroupKey
 	}
-	if perConnUp > 0 {
-		upBuckets = append(upBuckets, throttle.NewBucket(perConnUp))
+
+	if groupKey != "" && h.groupBuckets != nil {
+		// Group mode: shared buckets across all connections with the same key.
+		dl, ul := h.groupBuckets.Acquire(groupKey, perConnDown, perConnUp)
+		if dl != nil {
+			downBuckets = append(downBuckets, dl)
+		}
+		if ul != nil {
+			upBuckets = append(upBuckets, ul)
+		}
+		cleanup = func() { h.groupBuckets.Release(groupKey) }
+	} else {
+		// Per-connection mode: independent bucket per connection.
+		if perConnDown > 0 {
+			downBuckets = append(downBuckets, throttle.NewBucket(perConnDown))
+		}
+		if perConnUp > 0 {
+			upBuckets = append(upBuckets, throttle.NewBucket(perConnUp))
+		}
 	}
 
 	// Nothing to throttle — return unchanged.
 	if len(downBuckets) == 0 && len(upBuckets) == 0 {
-		return w, r
+		return w, r, cleanup
 	}
 
 	// Wrap response writer for download throttling.
@@ -1345,7 +1374,7 @@ func (h *swappableHandler) applySpeedLimit(
 		Upload:   upBuckets,
 	}))
 
-	return w, r
+	return w, r, cleanup
 }
 
 // throttledResponseWriter wraps http.ResponseWriter to enforce download speed limits.
