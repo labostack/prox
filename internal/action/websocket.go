@@ -15,9 +15,20 @@ import (
 )
 
 // isWebSocketUpgrade returns true if the request is a WebSocket upgrade.
+// Supports both HTTP/1.1 (Connection: Upgrade) and HTTP/2 Extended CONNECT (RFC 8441).
 func isWebSocketUpgrade(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
-		headerContains(r.Header, "Connection", "upgrade")
+	// HTTP/1.1: standard upgrade mechanism.
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		headerContains(r.Header, "Connection", "upgrade") {
+		return true
+	}
+	// HTTP/2: Extended CONNECT with :protocol pseudo-header (RFC 8441).
+	// Currently disabled by default in Go, but future-proofed for when it is enabled.
+	if r.Method == http.MethodConnect && r.ProtoMajor == 2 &&
+		strings.EqualFold(r.Header.Get(":protocol"), "websocket") {
+		return true
+	}
+	return false
 }
 
 // headerContains checks if a comma-separated header contains a value (case-insensitive).

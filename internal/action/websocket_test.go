@@ -2,6 +2,7 @@ package action
 
 import (
 	"bufio"
+	crypto_tls "crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -337,5 +338,136 @@ func TestNonWebSocketPassthrough(t *testing.T) {
 	}
 	if w.Body.String() != "regular response" {
 		t.Errorf("body mismatch: got %q", w.Body.String())
+	}
+}
+
+// TestWebSocketProxyTLS verifies WebSocket upgrade works through a TLS server
+// with HTTP/2 disabled (TLSNextProto = empty map).
+func TestWebSocketProxyTLS(t *testing.T) {
+	// WebSocket echo upstream (plain HTTP).
+	echoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isWebSocketUpgrade(r) {
+			http.Error(w, "expected websocket upgrade", http.StatusBadRequest)
+			return
+		}
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "hijack not supported", http.StatusInternalServerError)
+			return
+		}
+
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+		_, _ = buf.WriteString("Upgrade: websocket\r\n")
+		_, _ = buf.WriteString("Connection: Upgrade\r\n")
+		_, _ = buf.WriteString("\r\n")
+		_ = buf.Flush()
+
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			_, _ = buf.WriteString(scanner.Text() + "\n")
+			_ = buf.Flush()
+		}
+	}))
+	defer echoServer.Close()
+
+	proxy, err := NewProxy(&config.Action{
+		Type:     config.ActionTypeProxy,
+		Upstream: echoServer.URL,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+
+	// TLS proxy server with HTTP/2 explicitly disabled.
+	proxyServer := httptest.NewUnstartedServer(proxy)
+	proxyServer.Config.TLSNextProto = make(map[string]func(*http.Server, *crypto_tls.Conn, http.Handler))
+	proxyServer.StartTLS()
+	defer proxyServer.Close()
+
+	// Connect via TLS and send a WebSocket upgrade.
+	conn, err := crypto_tls.DialWithDialer(
+		&net.Dialer{Timeout: 5 * time.Second},
+		"tcp",
+		strings.TrimPrefix(proxyServer.URL, "https://"),
+		&crypto_tls.Config{InsecureSkipVerify: true},
+	)
+	if err != nil {
+		t.Fatalf("TLS dial: %v", err)
+	}
+	defer conn.Close()
+
+	req := "GET / HTTP/1.1\r\n" +
+		"Host: localhost\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"\r\n"
+	_, err = conn.Write([]byte(req))
+	if err != nil {
+		t.Fatalf("write upgrade request: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+
+	// Verify bidirectional data flow.
+	testMsg := "tls websocket test\n"
+	_, err = conn.Write([]byte(testMsg))
+	if err != nil {
+		t.Fatalf("write test message: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+
+	if line != testMsg {
+		t.Errorf("echo mismatch: got %q, want %q", line, testMsg)
+	}
+}
+
+// TestIsWebSocketUpgradeHTTP2ExtendedConnect verifies detection of
+// HTTP/2 Extended CONNECT with :protocol pseudo-header (RFC 8441).
+func TestIsWebSocketUpgradeHTTP2ExtendedConnect(t *testing.T) {
+	r := &http.Request{
+		Method:     http.MethodConnect,
+		Proto:      "HTTP/2.0",
+		ProtoMajor: 2,
+		ProtoMinor: 0,
+		Header:     http.Header{},
+	}
+	r.Header.Set(":protocol", "websocket")
+
+	if !isWebSocketUpgrade(r) {
+		t.Error("expected true for HTTP/2 Extended CONNECT with :protocol=websocket")
+	}
+
+	// Wrong protocol value.
+	r.Header.Set(":protocol", "mqtt")
+	if isWebSocketUpgrade(r) {
+		t.Error("expected false for :protocol=mqtt")
+	}
+
+	// Not a CONNECT request.
+	r.Method = http.MethodGet
+	r.Header.Set(":protocol", "websocket")
+	if isWebSocketUpgrade(r) {
+		t.Error("expected false for GET with :protocol=websocket")
 	}
 }
