@@ -18,6 +18,7 @@ Every config has three sections:
 │  routes[]    │   └ autostart│  type: serve  │                 │
 │   └ match    │              │  timeout      │                 │
 │   └ plugins ─│──► ref       │               │                 │
+│   └ speed    │              │               │                 │
 │   └ action ──│──────────────│──► ref ───────│──► body_ref     │
 └──────────────┴──────────────┴───────────────┴─────────────────┘
 ```
@@ -188,6 +189,7 @@ The validator checks:
 - Balancer targets are non-empty and unique (empty allowed with plugins)
 - Balancer is only used with `proxy` or `pass` actions
 - Action upstream contains `{target}` when a balancer is used
+- Speed config values are non-negative, at least one direction > 0
 - Plugin paths are non-empty
 - No duplicate action/resource names across files
 - No circular file references

@@ -92,25 +92,28 @@
           },
         },
 
-        // Load-balanced proxy — round-robin across upstream targets.
+        // Load-balanced proxy with shared bandwidth limit.
+        // All connections on this route share a 100 Mbps download budget.
         {
           match: { domain: "*.**", path: "/ws" },
           balancer: {
             type: "roundrobin",
             targets: ["10.0.1.1:3505", "10.0.1.2:3505", "10.0.1.3:3505"],
           },
+          speed: { download_mbps: 100, shared: true },
           action: {
             type: "proxy",
             upstream: "{target}",
           },
         },
 
-        // Plugin-managed targets with route-level variables.
-        // The plugin discovers upstreams; each route sets its own port.
+        // Plugin-managed targets with per-connection speed limit.
+        // Each connection gets its own 50 Mbps download / 10 Mbps upload cap.
         {
           match: { domain: "*.**", path: "/ws" },
           plugins: ["resolver"],
           balancer: { type: "leastconn" },
+          speed: { download_mbps: 50, upload_mbps: 10 },
           set: { port: "8080" },
           action: "dynamic_proxy",
         },

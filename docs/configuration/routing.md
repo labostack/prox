@@ -10,6 +10,7 @@ Routes are evaluated in order — first match wins.
     methods: ["GET", "POST"], // optional, empty = all
   },
   set: { port: "8080" }, // optional, route-level variables for templates
+  speed: { download_mbps: 50 }, // optional, bandwidth throttling
   action: "proxy_to_backend", // string ref to actions map
 }
 ```

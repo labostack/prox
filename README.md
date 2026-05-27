@@ -43,6 +43,7 @@ services:
 - **Domain matching** — segment wildcards (`*.example.com`, `cdn-*.**`)
 - **L4 dispatching** — SNI-based TCP pass-through alongside HTTP on the same port
 - **Load balancing** — round-robin, random, least-connections with connection tracking
+- **Speed limiting** — per-route bandwidth throttling with shared or per-connection budgets
 - **Plugin middleware** — auth, response modification, L4 gating via Go SDK
 - **Dynamic targets** — plugin-based service discovery with grouped targeting
 - **Hot reload** — zero-downtime config changes with file watcher
@@ -124,6 +125,44 @@ plugins: {
 }
 ```
 
+## Speed Limiting
+
+Per-route bandwidth throttling with independent download/upload limits. Supports two modes:
+
+**Per-connection** — each connection gets its own bandwidth budget (default):
+
+```json5
+{
+  match: { path: "/api/*" },
+  speed: { download_mbps: 50, upload_mbps: 10 },
+  action: { type: "proxy", upstream: "localhost:3000" },
+}
+```
+
+**Shared** — all connections on the route share the bandwidth budget:
+
+```json5
+{
+  match: { path: "/downloads/*" },
+  speed: { download_mbps: 100, shared: true },
+  action: { type: "proxy", upstream: "localhost:3000" },
+}
+```
+
+Plugins can also set speed limits dynamically — per-route via push or per-connection in `on_request`:
+
+```go
+// Set route-wide default.
+p.SetSpeedLimit("web:0", sdk.SpeedLimit{DownloadMbps: 50})
+
+// Per-connection limit in on_request.
+p.OnRequest(func(req *sdk.Request) *sdk.Response {
+    return sdk.Allow(sdk.WithSpeedLimit(10, 5)) // 10 Mbps down, 5 Mbps up
+})
+```
+
+When multiple limits apply (config + plugin push + plugin response), the **most restrictive** value wins per direction. Speed limiting works with all proxy modes including WebSocket and gRPC.
+
 ## Logging
 
 Colorized console output with structured key-value fields. Log level can be set via environment variable, CLI flag, or config file:
@@ -169,11 +208,11 @@ Comparison with popular proxies — same machine, same upstream, same load tool 
 
 | Proxy | Req/s | Avg latency | P99 latency |
 |-------|------:|------------:|------------:|
-| **prox** | **90,212** | **2.83 ms** | **3.72 ms** |
-| HAProxy | 89,950 | 2.79 ms | 4.00 ms |
-| Nginx | 87,626 | 2.89 ms | 3.78 ms |
-| Traefik | 83,325 | 3.06 ms | 5.63 ms |
-| Caddy | 12,432 | 25.55 ms | 118.78 ms |
+| HAProxy | 91,644 | 2.73 ms | 4.08 ms |
+| **prox** | **90,032** | **2.82 ms** | **3.85 ms** |
+| Nginx | 89,001 | 2.84 ms | 3.71 ms |
+| Traefik | 82,885 | 3.07 ms | 5.78 ms |
+| Caddy | 8,220 | 38.73 ms | 167.05 ms |
 
 <details>
 <summary>Benchmark details</summary>

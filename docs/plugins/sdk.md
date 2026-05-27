@@ -148,6 +148,7 @@ sdk.Deny(status, body, opts...)       // reject with HTTP response
 sdk.Drop()                            // silently close connection
 
 sdk.WithHeader(key, value)            // inject header (on allow: into request, on deny: into response)
+sdk.WithSpeedLimit(down, up)          // set per-connection bandwidth cap (Mbps)
 ```
 
 ### Response Modifications
@@ -198,6 +199,21 @@ p.SetActionGroupedTargets("dynamic_proxy", map[string][]string{
 
 With domain pattern `*.**`, a request to `de.example.com` captures `de` → the balancer picks from the `"de"` group only. Each group gets its own sub-balancer with the route's strategy.
 
+### Speed Limiting
+
+```go
+// By route ID:
+p.SetSpeedLimit(routeID, sdk.SpeedLimit{DownloadMbps: 50, UploadMbps: 10})
+
+// By action name:
+p.SetActionSpeedLimit("proxy", sdk.SpeedLimit{DownloadMbps: 100})
+
+// Wildcard — all routes:
+p.SetSpeedLimit("*", sdk.SpeedLimit{DownloadMbps: 25})
+```
+
+When multiple limits apply (config, push, response), the most restrictive value wins.
+
 ### Methods
 
 | Method | Description |
@@ -206,3 +222,5 @@ With domain pattern `*.**`, a request to `de.example.com` captures `de` → the 
 | `SetGroupedTargets(routeID, groups)` | Push grouped targets for a specific route (or `"*"` for all) |
 | `SetActionTargets(action, targets)` | Push flat targets for all routes using the given action |
 | `SetActionGroupedTargets(action, groups)` | Push grouped targets for all routes using the given action |
+| `SetSpeedLimit(routeID, limit)` | Push per-connection speed limit for a specific route (or `"*"` for all) |
+| `SetActionSpeedLimit(action, limit)` | Push per-connection speed limit for all routes using the given action |

@@ -8,6 +8,7 @@ Modular reverse proxy with config-driven routing, load balancing, L4/L7 dispatch
 - **L7 routing** — domain patterns, path matching, method filters
 - **L4 dispatching** — SNI-based TCP pass-through alongside HTTP
 - **Load balancing** — round-robin, random, least-connections
+- **Speed limiting** — per-route bandwidth throttling with shared or per-connection budgets
 - **Plugin system** — auth, response modification, target discovery via Go SDK
 - **Hot reload** — zero-downtime config changes with file watcher
 - **WebSocket** — transparent proxy with session pinning
