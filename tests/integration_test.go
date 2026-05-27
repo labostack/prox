@@ -670,7 +670,7 @@ func TestProxy_SpeedLimit(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", payloadSize))
-		w.Write(payload)
+		_, _ = w.Write(payload)
 	})
 	srv := &http.Server{
 		Addr:    fmt.Sprintf("127.0.0.1:%d", upPort),

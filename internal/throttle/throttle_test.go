@@ -117,11 +117,11 @@ func TestSharedBucket(t *testing.T) {
 	start := time.Now()
 	go func() {
 		defer wg.Done()
-		w1.Write(data)
+		_, _ = w1.Write(data)
 	}()
 	go func() {
 		defer wg.Done()
-		w2.Write(data)
+		_, _ = w2.Write(data)
 	}()
 	wg.Wait()
 	elapsed := time.Since(start)
