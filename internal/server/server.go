@@ -923,7 +923,7 @@ func buildRequestInfo(r *http.Request, mr *router.MatchResult, routeID string) *
 
 	// Read up to maxPluginBody bytes for the plugin, then restore the body.
 	// Skip for methods that typically carry no meaningful body.
-	if r.Body != nil && r.ContentLength != 0 && hasRequestBody(r.Method) {
+	if r.Body != nil && r.ContentLength > 0 && hasRequestBody(r.Method) {
 		lr := io.LimitReader(r.Body, maxPluginBody+1)
 		body, err := io.ReadAll(lr)
 		if err == nil && len(body) > 0 {
