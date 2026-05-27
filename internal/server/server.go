@@ -2,9 +2,11 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +29,7 @@ import (
 	"github.com/dortanes/prox/internal/plugin"
 	"github.com/dortanes/prox/internal/resource"
 	"github.com/dortanes/prox/internal/router"
+	"github.com/dortanes/prox/internal/throttle"
 )
 
 const (
@@ -784,8 +787,10 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	snap := h.current.Load()
 
 	// Fast path: skip MatchResult allocation when nobody needs it.
+	// Speed-limited routes need MatchResult for bucket access.
 	var actionName string
-	if h.plugins == nil && !accessOn {
+	needMatch := h.plugins != nil || accessOn || snap.router.HasSpeed()
+	if !needMatch {
 		actionName = snap.router.MatchAction(r)
 	} else {
 		r, actionName = snap.router.Match(r)
@@ -797,6 +802,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Plugin on_request gate.
 	var reqInfo *plugin.RequestInfo
+	var pluginSpeedLimit *plugin.SpeedLimit
 	if h.plugins != nil {
 		mr := router.GetMatchResult(r)
 		routeID := mr.RouteID(h.name)
@@ -831,6 +837,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for k, v := range res.Headers {
 				r.Header.Set(k, v)
 			}
+			pluginSpeedLimit = res.SpeedLimit
 		}
 
 		// Wrap response writer for on_response hook.
@@ -843,6 +850,11 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				ctx:            r.Context(),
 			}
 		}
+	}
+
+	// Apply speed limiting.
+	if mr := router.GetMatchResult(r); mr != nil {
+		w, r = h.applySpeedLimit(w, r, mr, pluginSpeedLimit)
 	}
 
 	handler := snap.registry.Get(actionName)
@@ -1152,3 +1164,127 @@ func (c *limitConn) Close() error {
 	c.once.Do(func() { <-c.sem })
 	return err
 }
+
+// --- speed limiting ---
+
+// applySpeedLimit resolves effective download/upload speed limits from three
+// sources (config route, plugin push, plugin response) and wraps the
+// ResponseWriter and/or request Body accordingly. Returns the (possibly wrapped)
+// writer and request. No-op when no speed limits apply.
+func (h *swappableHandler) applySpeedLimit(
+	w http.ResponseWriter,
+	r *http.Request,
+	mr *router.MatchResult,
+	pluginSpeed *plugin.SpeedLimit,
+) (http.ResponseWriter, *http.Request) {
+
+	var downBuckets, upBuckets []*throttle.Bucket
+
+	// 1. Config-level shared buckets.
+	if mr.DownloadBucket != nil {
+		downBuckets = append(downBuckets, mr.DownloadBucket)
+	}
+	if mr.UploadBucket != nil {
+		upBuckets = append(upBuckets, mr.UploadBucket)
+	}
+
+	// 2. Per-connection rate from config (non-shared), plugin push, plugin response.
+	// Use the minimum non-zero value across all sources.
+	perConnDown := mr.DownloadBps
+	perConnUp := mr.UploadBps
+
+	if h.plugins != nil {
+		routeID := mr.RouteID(h.name)
+		sl := h.plugins.GetSpeedLimit(routeID)
+		if sl.DownloadBps > 0 {
+			perConnDown = minPositive(perConnDown, sl.DownloadBps)
+		}
+		if sl.UploadBps > 0 {
+			perConnUp = minPositive(perConnUp, sl.UploadBps)
+		}
+	}
+
+	if pluginSpeed != nil {
+		if pluginSpeed.DownloadMbps > 0 {
+			perConnDown = minPositive(perConnDown, throttle.MbpsToBytes(pluginSpeed.DownloadMbps))
+		}
+		if pluginSpeed.UploadMbps > 0 {
+			perConnUp = minPositive(perConnUp, throttle.MbpsToBytes(pluginSpeed.UploadMbps))
+		}
+	}
+
+	// Create per-connection buckets from the resolved rates.
+	if perConnDown > 0 {
+		downBuckets = append(downBuckets, throttle.NewBucket(perConnDown))
+	}
+	if perConnUp > 0 {
+		upBuckets = append(upBuckets, throttle.NewBucket(perConnUp))
+	}
+
+	// Nothing to throttle — return unchanged.
+	if len(downBuckets) == 0 && len(upBuckets) == 0 {
+		return w, r
+	}
+
+	// Wrap response writer for download throttling.
+	if tw := throttle.NewWriter(w, downBuckets...); tw != nil {
+		w = &throttledResponseWriter{ResponseWriter: w, tw: tw}
+	}
+
+	// Wrap request body for upload throttling.
+	if tr := throttle.NewReader(r.Body, upBuckets...); tr != nil {
+		r.Body = io.NopCloser(tr)
+	}
+
+	// Store limits in context for handlers that hijack (WebSocket).
+	r = r.WithContext(throttle.NewContext(r.Context(), &throttle.Limits{
+		Download: downBuckets,
+		Upload:   upBuckets,
+	}))
+
+	return w, r
+}
+
+// throttledResponseWriter wraps http.ResponseWriter to enforce download speed limits.
+type throttledResponseWriter struct {
+	http.ResponseWriter
+	tw *throttle.Writer
+}
+
+func (w *throttledResponseWriter) Write(b []byte) (int, error) {
+	return w.tw.Write(b)
+}
+
+func (w *throttledResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *throttledResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
+}
+
+// Unwrap returns the underlying ResponseWriter for middleware chaining.
+func (w *throttledResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// minPositive returns the smaller of two positive values.
+// Zero values are ignored (treated as unlimited).
+func minPositive(a, b int64) int64 {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+

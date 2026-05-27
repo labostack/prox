@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dortanes/prox/internal/throttle"
 )
 
 // isWebSocketUpgrade returns true if the request is a WebSocket upgrade.
@@ -130,12 +132,25 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 	}
 
 	// Bidirectional relay between client and upstream.
+	// Apply speed limits from context if configured.
+	var upReader io.Reader = clientBuf
+	var downReader io.Reader = upstreamBuf
+
+	if limits := throttle.FromContext(r.Context()); limits != nil {
+		if tr := throttle.NewReader(clientBuf, limits.Upload...); tr != nil {
+			upReader = tr
+		}
+		if tr := throttle.NewReader(upstreamBuf, limits.Download...); tr != nil {
+			downReader = tr
+		}
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(upstream, clientBuf)
+		_, _ = io.Copy(upstream, upReader)
 		if tc, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = tc.CloseWrite()
 		}
@@ -143,7 +158,7 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, upstreamBuf)
+		_, _ = io.Copy(client, downReader)
 		if tc, ok := client.(interface{ CloseWrite() error }); ok {
 			_ = tc.CloseWrite()
 		}

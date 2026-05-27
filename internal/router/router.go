@@ -13,6 +13,7 @@ import (
 
 	"github.com/dortanes/prox/internal/balancer"
 	"github.com/dortanes/prox/internal/config"
+	"github.com/dortanes/prox/internal/throttle"
 )
 
 // ctxKey is an unexported type for context keys to avoid collisions.
@@ -34,6 +35,13 @@ type MatchResult struct {
 	Target        string // selected target from balancer (empty if no balancer)
 	Vars          map[string]string // route-level variables from "set"
 	done          func() // release callback for connection-tracking balancers
+
+	// Speed limiting — populated from route config.
+	// Shared buckets are route-wide; BPS rates are for per-connection bucket creation.
+	DownloadBucket *throttle.Bucket // shared download bucket (nil when per-conn or no limit)
+	UploadBucket   *throttle.Bucket // shared upload bucket (nil when per-conn or no limit)
+	DownloadBps    int64             // per-connection download bytes/sec (0 = no limit)
+	UploadBps      int64             // per-connection upload bytes/sec (0 = no limit)
 }
 
 // Done signals that the request/connection has completed.
@@ -62,7 +70,11 @@ type Router struct {
 	needsDomainMatch bool // true if any route has domain-based matching
 	isCatchAllOnly   bool // true if there is only one catch-all route
 	catchAllAction   string
+	hasSpeed         bool // true if any route has speed limiting
 }
+
+// HasSpeed returns true if any route in this router has speed limiting configured.
+func (rt *Router) HasSpeed() bool { return rt.hasSpeed }
 
 // compiledRoute is an optimized, pre-processed representation of a config route.
 type compiledRoute struct {
@@ -84,6 +96,12 @@ type compiledRoute struct {
 
 	// Route-level variables from "set".
 	vars map[string]string
+
+	// Speed limiting.
+	downloadBucket *throttle.Bucket // shared download bucket (nil if per-conn or no limit)
+	uploadBucket   *throttle.Bucket // shared upload bucket
+	downloadBps    int64            // per-connection download rate in bytes/sec
+	uploadBps      int64            // per-connection upload rate in bytes/sec
 }
 
 // New compiles a list of config routes into a Router.
@@ -128,6 +146,19 @@ func New(routes []*config.Route) *Router {
 		cr.bal = buildBalancer(r.Balancer)
 		cr.vars = r.Set
 
+		// Pre-compute speed limiting buckets/rates.
+		if r.Speed != nil {
+			downBps := throttle.MbpsToBytes(r.Speed.DownloadMbps)
+			upBps := throttle.MbpsToBytes(r.Speed.UploadMbps)
+			if r.Speed.Shared {
+				cr.downloadBucket = throttle.NewBucket(downBps)
+				cr.uploadBucket = throttle.NewBucket(upBps)
+			} else {
+				cr.downloadBps = downBps
+				cr.uploadBps = upBps
+			}
+		}
+
 		compiled = append(compiled, cr)
 	}
 
@@ -135,6 +166,11 @@ func New(routes []*config.Route) *Router {
 	for _, cr := range compiled {
 		if cr.domainSegments != nil {
 			rt.needsDomainMatch = true
+		}
+		if cr.downloadBucket != nil || cr.uploadBucket != nil || cr.downloadBps > 0 || cr.uploadBps > 0 {
+			rt.hasSpeed = true
+		}
+		if rt.needsDomainMatch && rt.hasSpeed {
 			break
 		}
 	}
@@ -223,12 +259,16 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 		route := rt.routes[0]
 		host := stripPort(r.Host)
 		result := &MatchResult{
-			RouteIndex:    0,
-			Action:        route.action,
-			DomainPattern: route.domain,
-			Domain:        host,
-			Path:          r.URL.Path,
-			Vars:          route.vars,
+			RouteIndex:     0,
+			Action:         route.action,
+			DomainPattern:  route.domain,
+			Domain:         host,
+			Path:           r.URL.Path,
+			Vars:           route.vars,
+			DownloadBucket: route.downloadBucket,
+			UploadBucket:   route.uploadBucket,
+			DownloadBps:    route.downloadBps,
+			UploadBps:      route.uploadBps,
 		}
 
 		if route.bal != nil {
@@ -264,15 +304,19 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 		}
 
 		result := &MatchResult{
-			RouteIndex:    i,
-			Action:        route.action,
-			DomainPattern: route.domain,
-			MatchDomain:   strings.Join(captures, "."),
-			MatchGlob:     globTail,
-			MatchPath:     route.path,
-			Domain:        host,
-			Path:          r.URL.Path,
-			Vars:          route.vars,
+			RouteIndex:     i,
+			Action:         route.action,
+			DomainPattern:  route.domain,
+			MatchDomain:    strings.Join(captures, "."),
+			MatchGlob:      globTail,
+			MatchPath:      route.path,
+			Domain:         host,
+			Path:           r.URL.Path,
+			Vars:           route.vars,
+			DownloadBucket: route.downloadBucket,
+			UploadBucket:   route.uploadBucket,
+			DownloadBps:    route.downloadBps,
+			UploadBps:      route.uploadBps,
 		}
 
 		// Select a target from the balancer if present.

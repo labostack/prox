@@ -41,6 +41,17 @@ type hookIndex struct {
 	timeouts map[string]time.Duration
 }
 
+// SpeedEntry holds per-connection bandwidth caps pushed by a plugin.
+type SpeedEntry struct {
+	DownloadBps int64 // bytes per second (0 = unlimited)
+	UploadBps   int64 // bytes per second (0 = unlimited)
+}
+
+// speedIndex is an immutable map of route speed limits, swapped atomically.
+type speedIndex struct {
+	entries map[string]SpeedEntry // routeID → speed limit
+}
+
 // Manager supervises plugin processes and routes push messages to balancers.
 // It also provides the hook call API (OnRequest, OnResponse, OnConnect)
 // for the HTTP handler and L4 dispatcher.
@@ -51,7 +62,8 @@ type Manager struct {
 	routes    map[string]*RouteInfo // all routes with balancers (routeID → info)
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
-	index     atomic.Pointer[hookIndex] // lock-free hot-path lookup
+	index     atomic.Pointer[hookIndex]  // lock-free hot-path lookup
+	speeds    atomic.Pointer[speedIndex] // lock-free speed limit lookup
 }
 
 // managed wraps a plugin process with restart state and hook caller.
@@ -289,6 +301,22 @@ func (m *Manager) OnRequest(ctx context.Context, routeID string, req *RequestInf
 			}
 			merged.Headers[k] = v
 		}
+		// Merge speed limits — use the lowest non-zero value per direction.
+		if result.SpeedLimit != nil {
+			if merged.SpeedLimit == nil {
+				merged.SpeedLimit = &SpeedLimit{}
+			}
+			if result.SpeedLimit.DownloadMbps > 0 {
+				if merged.SpeedLimit.DownloadMbps == 0 || result.SpeedLimit.DownloadMbps < merged.SpeedLimit.DownloadMbps {
+					merged.SpeedLimit.DownloadMbps = result.SpeedLimit.DownloadMbps
+				}
+			}
+			if result.SpeedLimit.UploadMbps > 0 {
+				if merged.SpeedLimit.UploadMbps == 0 || result.SpeedLimit.UploadMbps < merged.SpeedLimit.UploadMbps {
+					merged.SpeedLimit.UploadMbps = result.SpeedLimit.UploadMbps
+				}
+			}
+		}
 	}
 
 	return merged, nil
@@ -438,6 +466,9 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 	switch push.Method {
 	case MethodSetTargets:
 		m.handleSetTargets(mg, push)
+
+	case MethodSetSpeed:
+		m.handleSetSpeed(mg, push)
 
 	case MethodReady:
 		m.handleReady(mg, push)
@@ -627,3 +658,85 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 	}
 	m.mu.Unlock()
 }
+
+// GetSpeedLimit returns the plugin-pushed speed limit for a route.
+// Lock-free: reads from the atomic speed index.
+func (m *Manager) GetSpeedLimit(routeID string) SpeedEntry {
+	idx := m.speeds.Load()
+	if idx == nil {
+		return SpeedEntry{}
+	}
+	return idx.entries[routeID]
+}
+
+// handleSetSpeed routes speed limit pushes to the appropriate routes.
+func (m *Manager) handleSetSpeed(mg *managed, push Push) {
+	downloadBps := mbpsToBytes(push.Params.DownloadMbps)
+	uploadBps := mbpsToBytes(push.Params.UploadMbps)
+
+	entry := SpeedEntry{
+		DownloadBps: downloadBps,
+		UploadBps:   uploadBps,
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Load current index or create empty one.
+	current := m.speeds.Load()
+	entries := make(map[string]SpeedEntry)
+	if current != nil {
+		for k, v := range current.entries {
+			entries[k] = v
+		}
+	}
+
+	if push.Params.Action != "" || push.Params.RouteID == "*" {
+		// Action-based or wildcard — apply to matching routes.
+		count := 0
+		for routeID, ri := range m.routes {
+			if push.Params.Action != "" && ri.Action != push.Params.Action {
+				continue
+			}
+			entries[routeID] = entry
+			count++
+		}
+		if count == 0 {
+			target := push.Params.RouteID
+			if push.Params.Action != "" {
+				target = push.Params.Action
+			}
+			slog.Warn("plugin speed limit matched no routes",
+				"plugin", filepath.Base(mg.path),
+				"target", target,
+			)
+		} else {
+			slog.Debug("plugin updated speed limits",
+				"plugin", filepath.Base(mg.path),
+				"routes", count,
+				"download_bps", downloadBps,
+				"upload_bps", uploadBps,
+			)
+		}
+	} else {
+		// Route-bound targeting.
+		entries[push.Params.RouteID] = entry
+		slog.Debug("plugin updated speed limit",
+			"plugin", filepath.Base(mg.path),
+			"route", push.Params.RouteID,
+			"download_bps", downloadBps,
+			"upload_bps", uploadBps,
+		)
+	}
+
+	m.speeds.Store(&speedIndex{entries: entries})
+}
+
+// mbpsToBytes converts megabits per second to bytes per second.
+func mbpsToBytes(mbps float64) int64 {
+	if mbps <= 0 {
+		return 0
+	}
+	return int64(mbps * 1_000_000 / 8)
+}
+
