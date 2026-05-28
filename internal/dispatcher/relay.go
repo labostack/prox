@@ -9,13 +9,13 @@ import (
 // Relay copies data bidirectionally between two connections.
 // It blocks until both directions finish (EOF or error).
 // Caller is responsible for closing both connections.
-func Relay(client, upstream net.Conn) {
+func Relay(client, upstream net.Conn) (rxBytes, txBytes int64) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(upstream, client)
+		rxBytes, _ = io.Copy(upstream, client)
 		// Signal to upstream that no more data is coming.
 		if tc, ok := upstream.(halfCloser); ok {
 			_ = tc.CloseWrite()
@@ -24,13 +24,14 @@ func Relay(client, upstream net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, upstream)
+		txBytes, _ = io.Copy(client, upstream)
 		if tc, ok := client.(halfCloser); ok {
 			_ = tc.CloseWrite()
 		}
 	}()
 
 	wg.Wait()
+	return
 }
 
 // halfCloser is implemented by connections that support half-close

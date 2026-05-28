@@ -2,6 +2,7 @@ package action
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -117,9 +118,11 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
+	var totalTx int64
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			totalTx += int64(n)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				break
 			}
@@ -130,6 +133,9 @@ func serveTunnel(w http.ResponseWriter, r *http.Request, target *url.URL, header
 		if readErr != nil {
 			break
 		}
+	}
+	if cs := ConnStatsFromContext(r.Context()); cs != nil {
+		cs.AddTx(totalTx)
 	}
 }
 
@@ -190,7 +196,7 @@ func serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL, timeo
 		serveConnectH2(w, r, upstream)
 		return
 	}
-	serveConnectH1(w, upstream)
+	serveConnectH1(w, r.Context(), upstream)
 }
 
 // chainConnect sends a CONNECT request to the upstream proxy and waits for
@@ -228,7 +234,7 @@ func chainConnect(upstream net.Conn, target string, timeout time.Duration) error
 }
 
 // serveConnectH1 handles CONNECT over HTTP/1.1 by hijacking the raw connection.
-func serveConnectH1(w http.ResponseWriter, upstream net.Conn) {
+func serveConnectH1(w http.ResponseWriter, ctx context.Context, upstream net.Conn) {
 	clientConn, clientBuf, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		upstream.Close()
@@ -247,12 +253,18 @@ func serveConnectH1(w http.ResponseWriter, upstream net.Conn) {
 	go func() {
 		defer upstream.Close()
 		defer clientConn.Close()
-		_, _ = io.Copy(upstream, clientBuf)
+		rx, _ := io.Copy(upstream, clientBuf)
+		if cs := ConnStatsFromContext(ctx); cs != nil {
+			cs.AddRx(rx)
+		}
 	}()
 
 	defer upstream.Close()
 	defer clientConn.Close()
-	_, _ = io.Copy(clientConn, upstream)
+	tx, _ := io.Copy(clientConn, upstream)
+	if cs := ConnStatsFromContext(ctx); cs != nil {
+		cs.AddTx(tx)
+	}
 }
 
 // serveConnectH2 handles CONNECT over HTTP/2 using the framed stream.
@@ -268,7 +280,10 @@ func serveConnectH2(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
 		defer upstream.Close()
 		bufp := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufp)
-		_, _ = io.CopyBuffer(upstream, r.Body, *bufp)
+		rx, _ := io.CopyBuffer(upstream, r.Body, *bufp)
+		if cs := ConnStatsFromContext(r.Context()); cs != nil {
+			cs.AddRx(rx)
+		}
 	}()
 
 	defer upstream.Close()
@@ -276,18 +291,23 @@ func serveConnectH2(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
+	var totalTx int64
 	for {
 		n, readErr := upstream.Read(buf)
 		if n > 0 {
+			totalTx += int64(n)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return
+				break
 			}
 			if canFlush {
 				flusher.Flush()
 			}
 		}
 		if readErr != nil {
-			return
+			break
 		}
+	}
+	if cs := ConnStatsFromContext(r.Context()); cs != nil {
+		cs.AddTx(totalTx)
 	}
 }

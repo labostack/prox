@@ -262,7 +262,7 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 		return
 	}
 
-	Relay(client, up)
+	_, _ = Relay(client, up)
 }
 
 // matchDomain checks if host matches the pattern segments.

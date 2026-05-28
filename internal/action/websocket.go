@@ -155,9 +155,11 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	var uploadBytes, downloadBytes int64
+
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(upstream, upReader)
+		uploadBytes, _ = io.Copy(upstream, upReader)
 		if tc, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = tc.CloseWrite()
 		}
@@ -165,11 +167,16 @@ func serveWebSocket(w http.ResponseWriter, r *http.Request, target *url.URL, hea
 
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(client, downReader)
+		downloadBytes, _ = io.Copy(client, downReader)
 		if tc, ok := client.(interface{ CloseWrite() error }); ok {
 			_ = tc.CloseWrite()
 		}
 	}()
 
 	wg.Wait()
+
+	if cs := ConnStatsFromContext(r.Context()); cs != nil {
+		cs.AddRx(uploadBytes)
+		cs.AddTx(downloadBytes)
+	}
 }
