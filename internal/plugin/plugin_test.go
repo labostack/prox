@@ -93,11 +93,13 @@ func TestResolvePluginBinary_NonexistentPath(t *testing.T) {
 func TestNewestGoFile(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create two .go files.
-	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("a"), 0644); err != nil {
+	aPath := filepath.Join(dir, "a.go")
+	bPath := filepath.Join(dir, "b.go")
+
+	if err := os.WriteFile(aPath, []byte("a"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("bb"), 0644); err != nil {
+	if err := os.WriteFile(bPath, []byte("bb"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	// Create a non-.go file (should be ignored).
@@ -105,11 +107,16 @@ func TestNewestGoFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Explicitly set mtimes — filesystem granularity varies across OS/FS.
+	past := time.Now().Add(-1 * time.Hour)
+	future := time.Now().Add(1 * time.Hour)
+	os.Chtimes(aPath, past, past)
+	os.Chtimes(bPath, future, future)
+
 	newest := newestGoFile(dir)
 	if newest == nil {
 		t.Fatal("expected a result, got nil")
 	}
-	// Should be b.go (written last).
 	if newest.Name() != "b.go" {
 		t.Errorf("expected b.go, got %s", newest.Name())
 	}
