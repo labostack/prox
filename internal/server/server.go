@@ -904,10 +904,12 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var cs *action.ConnStats
 	var hasDisconnect bool
 	var disconnectRouteID string
+	var disconnectTarget string
 	if h.plugins != nil {
 		mr := router.GetMatchResult(r)
 		if mr != nil {
 			disconnectRouteID = mr.RouteID(h.name)
+			disconnectTarget = mr.Target
 			hasDisconnect = h.plugins.HasHook(disconnectRouteID, plugin.HookOnDisconnect)
 		}
 	}
@@ -974,6 +976,7 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.plugins.OnDisconnect(disconnectRouteID, &plugin.DisconnectInfo{
 			RouteID:    disconnectRouteID,
+			Target:     disconnectTarget,
 			RemoteAddr: r.RemoteAddr,
 			BytesRx:    bytesRx,
 			BytesTx:    bytesTx,
