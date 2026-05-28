@@ -15,6 +15,7 @@ Plugins are external executables that extend prox at runtime. They can dynamical
 |------|-------|-----------|----------|
 | Push-only | `OnConfigure` | stdin/stdout | Target discovery, DNS resolver |
 | Request-response | `OnRequest`, `OnResponse`, `OnConnect` | Unix socket (msgpack) | Auth, rate limiting, header injection |
+| Fire-and-forget | `OnDisconnect` | Unix socket (msgpack) | Connection statistics, usage tracking |
 | Hybrid | All | Both | Full middleware + discovery |
 
 ## Configuration

@@ -44,7 +44,7 @@ services:
 - **L4 dispatching** — SNI-based TCP pass-through alongside HTTP on the same port
 - **Load balancing** — round-robin, random, least-connections with connection tracking
 - **Speed limiting** — per-route bandwidth throttling with shared or per-connection budgets
-- **Plugin middleware** — auth, response modification, L4 gating via Go SDK
+- **Plugin middleware** — auth, response modification, L4 gating, connection stats via Go SDK
 - **Dynamic targets** — plugin-based service discovery with grouped targeting
 - **Hot reload** — zero-downtime config changes with file watcher
 - **Logging** — colorized console, leveled output, file-based access/error logs
@@ -84,7 +84,7 @@ services:
 
 ## Plugins
 
-Extend prox with auth, response modification, and L4 gating via the [Go SDK](https://dortanes.github.io/prox/plugins#sdk):
+Extend prox with auth, response modification, L4 gating, and connection statistics via the [Go SDK](https://dortanes.github.io/prox/plugins#sdk):
 
 ```go
 p := sdk.New()

@@ -36,12 +36,12 @@ Sent after `configure` to declare request-response capabilities. This tells prox
   "method": "ready",
   "params": {
     "socket": "/tmp/prox-p-12345.sock",
-    "hooks": ["on_request", "on_response", "on_connect"]
+    "hooks": ["on_request", "on_response", "on_connect", "on_disconnect"]
   }
 }
 ```
 
-Available hook names: `on_request`, `on_response`, `on_connect`.
+Available hook names: `on_request`, `on_response`, `on_connect`, `on_disconnect`.
 
 ### Plugin → Prox: `set_targets`
 
@@ -142,7 +142,7 @@ Each frame is an `Envelope` containing a hook type and the hook-specific data:
 
 ```
 Envelope {
-  hook: string    // "on_request", "on_response", "on_connect"
+  hook: string    // "on_request", "on_response", "on_connect", "on_disconnect"
   data: bytes     // msgpack-encoded hook payload
 }
 ```
@@ -231,6 +231,20 @@ ResponsePair {
 | Field | msgpack key | Type |
 |-------|-------------|------|
 | Allow | `ok`        | bool |
+
+### `on_disconnect`
+
+Fire-and-forget — **no response is expected**. Prox writes the frame and does not wait for a reply.
+
+**Request payload:**
+
+| Field      | msgpack key | Type   |
+|------------|-------------|--------|
+| RouteID    | `r`         | string |
+| RemoteAddr | `a`         | string |
+| BytesRx    | `rx`        | int64  |
+| BytesTx    | `tx`        | int64  |
+| DurationMs | `ms`        | int64  |
 
 ## Minimal Plugin Example (Bash)
 

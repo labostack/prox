@@ -71,6 +71,7 @@ p.Run()
 | `OnRequest` | L7 | Authorize HTTP requests, inject headers |
 | `OnResponse` | L7 | Modify upstream response headers/status |
 | `OnConnect` | L4 | Gate raw TCP connections (pass routes) |
+| `OnDisconnect` | L7 | Receive connection stats (bytes, duration) |
 | `OnConfigure` | — | Lifecycle hook for target discovery |
 
 ## Docker

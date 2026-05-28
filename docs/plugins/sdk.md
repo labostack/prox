@@ -113,6 +113,25 @@ p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
 })
 ```
 
+### `OnDisconnect(func(event *DisconnectEvent))` — Fire-and-Forget
+
+Called after a connection ends (handler returns). Receives connection statistics. Unlike other hooks, this is fire-and-forget — no response is sent back to prox.
+
+```go
+p.OnDisconnect(func(event *sdk.DisconnectEvent) {
+    log.Printf("route=%s bytes_rx=%d bytes_tx=%d duration=%dms",
+        event.RouteID, event.BytesRx, event.BytesTx, event.DurationMs)
+})
+```
+
+| Field        | Type   | Description                              |
+|--------------|--------|------------------------------------------|
+| `RouteID`    | string | Route identifier (`service:routeIndex`)  |
+| `RemoteAddr` | string | Client IP:port                           |
+| `BytesRx`    | int64  | Bytes received from client (upload)      |
+| `BytesTx`    | int64  | Bytes transmitted to client (download)   |
+| `DurationMs` | int64  | Connection duration in milliseconds      |
+
 ## Request Fields
 
 | Field           | Type              | Description                                  |
