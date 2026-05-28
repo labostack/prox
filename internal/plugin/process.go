@@ -16,6 +16,7 @@ import (
 
 // Process wraps a single plugin subprocess.
 type Process struct {
+	name    string
 	path    string
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
@@ -27,7 +28,7 @@ type Process struct {
 
 // startProcess spawns the plugin binary and wires up stdin/stdout.
 // If the path ends in ".go", the source is compiled automatically.
-func startProcess(path string) (*Process, error) {
+func startProcess(name, path string) (*Process, error) {
 	binPath, err := resolvePluginBinary(path)
 	if err != nil {
 		return nil, err
@@ -50,13 +51,14 @@ func startProcess(path string) (*Process, error) {
 	}
 
 	// Forward plugin stderr to prox's logger.
-	cmd.Stderr = &logWriter{plugin: filepath.Base(path)}
+	cmd.Stderr = &logWriter{plugin: name}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting plugin %q: %w", path, err)
 	}
 
 	p := &Process{
+		name:    name,
 		path:    path,
 		cmd:     cmd,
 		stdin:   stdin,
@@ -288,7 +290,7 @@ func (p *Process) readLoop() {
 		var push Push
 		if err := json.Unmarshal(line, &push); err != nil {
 			slog.Warn("plugin sent invalid JSON",
-				"plugin", filepath.Base(p.path),
+				"plugin", p.name,
 				"err", err,
 				"line", string(line),
 			)
@@ -304,7 +306,7 @@ func (p *Process) readLoop() {
 		case p.pushCh <- push:
 		default:
 			slog.Warn("plugin push buffer full",
-				"plugin", filepath.Base(p.path),
+				"plugin", p.name,
 				"method", push.Method,
 			)
 		}
@@ -312,7 +314,7 @@ func (p *Process) readLoop() {
 
 	if err := p.scanner.Err(); err != nil {
 		slog.Debug("plugin stdout closed",
-			"plugin", filepath.Base(p.path),
+			"plugin", p.name,
 			"err", err,
 		)
 	}
@@ -333,7 +335,7 @@ func (w *logWriter) Write(p []byte) (int, error) {
 		if line == "" {
 			continue
 		}
-		slog.Debug(line, "plugin", w.plugin)
+		slog.Debug("[" + w.plugin + "] " + line)
 	}
 	return len(p), nil
 }

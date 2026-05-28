@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +18,7 @@ const (
 
 // Binding associates a route with a plugin process and its balancer.
 type Binding struct {
+	Name     string // human-readable alias from config
 	RouteID  string
 	Plugin   string // absolute path to plugin binary
 	Match    *MatchInfo
@@ -70,6 +70,7 @@ type Manager struct {
 
 // managed wraps a plugin process with restart state and hook caller.
 type managed struct {
+	name    string
 	path    string
 	proc    *Process
 	restart int       // consecutive restart count for backoff
@@ -108,30 +109,32 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	// Deduplicate plugin paths — one process per unique binary.
-	needed := make(map[string]bool)
+	needed := make(map[string]string) // path → name
 	for _, b := range m.bindings {
-		needed[b.Plugin] = true
+		if _, ok := needed[b.Plugin]; !ok {
+			needed[b.Plugin] = b.Name
+		}
 	}
 
-	for pluginPath := range needed {
+	for pluginPath, pluginName := range needed {
 		if _, ok := m.processes[pluginPath]; ok {
 			continue // already running
 		}
 
-		proc, err := startProcess(pluginPath)
+		proc, err := startProcess(pluginName, pluginPath)
 		if err != nil {
 			slog.Error("plugin start failed",
-				"plugin", filepath.Base(pluginPath),
+				"plugin", pluginName,
 				"err", err,
 			)
 			continue
 		}
 
-		mg := &managed{path: pluginPath, proc: proc}
+		mg := &managed{name: pluginName, path: pluginPath, proc: proc}
 		m.processes[pluginPath] = mg
 
 		slog.Info("plugin started",
-			"plugin", filepath.Base(pluginPath),
+			"plugin", pluginName,
 			"pid", proc.cmd.Process.Pid,
 		)
 
@@ -148,7 +151,7 @@ func (m *Manager) Start(ctx context.Context) error {
 				},
 			}); err != nil {
 				slog.Error("plugin configure failed",
-					"plugin", filepath.Base(pluginPath),
+					"plugin", pluginName,
 					"route", b.RouteID,
 					"err", err,
 				)
@@ -176,16 +179,18 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 	m.routes = routes
 
 	// Determine which plugins are still needed.
-	needed := make(map[string]bool)
+	needed := make(map[string]string) // path → name
 	for _, b := range bindings {
-		needed[b.Plugin] = true
+		if _, ok := needed[b.Plugin]; !ok {
+			needed[b.Plugin] = b.Name
+		}
 	}
 
 	// Stop plugins no longer referenced.
 	for path, mg := range m.processes {
-		if !needed[path] {
+		if _, ok := needed[path]; !ok {
 			slog.Info("plugin stopped",
-				"plugin", filepath.Base(path),
+				"plugin", mg.name,
 			)
 			if mg.caller != nil {
 				mg.caller.Close()
@@ -196,24 +201,24 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 	}
 
 	// Start new plugins and reconfigure existing ones.
-	for pluginPath := range needed {
+	for pluginPath, pluginName := range needed {
 		mg, exists := m.processes[pluginPath]
 
 		if !exists {
-			proc, err := startProcess(pluginPath)
+			proc, err := startProcess(pluginName, pluginPath)
 			if err != nil {
 				slog.Error("plugin start failed",
-					"plugin", filepath.Base(pluginPath),
+					"plugin", pluginName,
 					"err", err,
 				)
 				continue
 			}
 
-			mg = &managed{path: pluginPath, proc: proc}
+			mg = &managed{name: pluginName, path: pluginPath, proc: proc}
 			m.processes[pluginPath] = mg
 
 			slog.Info("plugin started",
-				"plugin", filepath.Base(pluginPath),
+				"plugin", pluginName,
 				"pid", proc.cmd.Process.Pid,
 			)
 
@@ -238,7 +243,7 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 				},
 			}); err != nil {
 				slog.Error("plugin configure failed",
-					"plugin", filepath.Base(pluginPath),
+					"plugin", pluginName,
 					"route", b.RouteID,
 					"err", err,
 				)
@@ -493,7 +498,7 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 
 	default:
 		slog.Warn("plugin unknown push method",
-			"plugin", filepath.Base(mg.path),
+			"plugin", mg.name,
 			"method", push.Method,
 		)
 	}
@@ -503,7 +508,7 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 func (m *Manager) handleReady(mg *managed, push Push) {
 	if push.Params.Socket == "" {
 		slog.Warn("plugin ready without socket",
-			"plugin", filepath.Base(mg.path),
+			"plugin", mg.name,
 		)
 		return
 	}
@@ -534,7 +539,7 @@ func (m *Manager) handleReady(mg *managed, push Push) {
 	m.mu.Unlock()
 
 	slog.Info("plugin ready",
-		"plugin", filepath.Base(mg.path),
+		"plugin", mg.name,
 		"hooks", push.Params.Hooks,
 	)
 }
@@ -579,7 +584,7 @@ func (m *Manager) applyGlobalTargets(mg *managed, push Push) {
 			target = push.Params.Action
 		}
 		slog.Warn("plugin targets matched no routes",
-			"plugin", filepath.Base(mg.path),
+			"plugin", mg.name,
 			"target", target,
 		)
 	}
@@ -599,21 +604,21 @@ func (m *Manager) applyTargets(mg *managed, routeID string, bal balancer.Balance
 				total += len(t)
 			}
 			slog.Debug("plugin updated grouped targets",
-				"plugin", filepath.Base(mg.path),
+				"plugin", mg.name,
 				"route", routeID,
 				"groups", len(push.Params.Groups),
 				"targets", total,
 			)
 		} else {
 			slog.Warn("plugin grouped targets ignored: balancer not keyed",
-				"plugin", filepath.Base(mg.path),
+				"plugin", mg.name,
 				"route", routeID,
 			)
 		}
 	} else {
 		bal.SwapTargets(push.Params.Targets)
 		slog.Debug("plugin updated targets",
-			"plugin", filepath.Base(mg.path),
+			"plugin", mg.name,
 			"route", routeID,
 			"targets", len(push.Params.Targets),
 		)
@@ -629,7 +634,7 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 	}
 
 	slog.Warn("plugin exited, restarting",
-		"plugin", filepath.Base(mg.path),
+		"plugin", mg.name,
 		"attempt", mg.restart,
 		"delay", delay,
 	)
@@ -641,10 +646,10 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 	case <-time.After(delay):
 	}
 
-	proc, err := startProcess(mg.path)
+	proc, err := startProcess(mg.name, mg.path)
 	if err != nil {
 		slog.Error("plugin restart failed",
-			"plugin", filepath.Base(mg.path),
+			"plugin", mg.name,
 			"attempt", mg.restart,
 			"err", err,
 		)
@@ -655,7 +660,7 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 	mg.proc = proc
 
 	slog.Info("plugin restarted",
-		"plugin", filepath.Base(mg.path),
+		"plugin", mg.name,
 		"pid", proc.cmd.Process.Pid,
 		"attempt", mg.restart,
 	)
@@ -725,12 +730,12 @@ func (m *Manager) handleSetSpeed(mg *managed, push Push) {
 				target = push.Params.Action
 			}
 			slog.Warn("plugin speed limit matched no routes",
-				"plugin", filepath.Base(mg.path),
+				"plugin", mg.name,
 				"target", target,
 			)
 		} else {
 			slog.Debug("plugin updated speed limits",
-				"plugin", filepath.Base(mg.path),
+				"plugin", mg.name,
 				"routes", count,
 				"download_bps", downloadBps,
 				"upload_bps", uploadBps,
@@ -740,7 +745,7 @@ func (m *Manager) handleSetSpeed(mg *managed, push Push) {
 		// Route-bound targeting.
 		entries[push.Params.RouteID] = entry
 		slog.Debug("plugin updated speed limit",
-			"plugin", filepath.Base(mg.path),
+			"plugin", mg.name,
 			"route", push.Params.RouteID,
 			"download_bps", downloadBps,
 			"upload_bps", uploadBps,

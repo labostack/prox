@@ -1098,8 +1098,11 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 
 			for _, pluginRef := range merged {
 				pluginPath := pluginRef
+				pluginName := pluginRef
 				if p, ok := cfg.Plugins[pluginRef]; ok {
 					pluginPath = p.Path
+				} else {
+					pluginName = strings.TrimSuffix(filepath.Base(pluginRef), ".go")
 				}
 
 				absPath, err := filepath.Abs(pluginPath)
@@ -1115,6 +1118,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 				bound[absPath] = true
 
 				bindings = append(bindings, &plugin.Binding{
+					Name:     pluginName,
 					RouteID:  routeID,
 					Plugin:   absPath,
 					Match:    match,
@@ -1146,6 +1150,7 @@ func buildPluginBindings(cfg *config.Config, balancers map[string]bal.Balancer) 
 		}
 
 		bindings = append(bindings, &plugin.Binding{
+			Name:   name,
 			Plugin: absPath,
 		})
 	}
