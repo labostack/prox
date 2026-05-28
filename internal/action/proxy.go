@@ -164,6 +164,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveWebSocket(w, r, p.target, p.headers, p.timeout)
 		return
 	}
+	if r.Method == http.MethodConnect {
+		serveConnect(w, r, p.target, p.timeout)
+		return
+	}
 	if p.stream {
 		serveTunnel(w, r, p.target, p.headers, p.timeout)
 		return
@@ -227,6 +231,10 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 
 	if isWebSocketUpgrade(r) {
 		serveWebSocket(w, r, target, p.headers, p.timeout)
+		return
+	}
+	if r.Method == http.MethodConnect {
+		serveConnect(w, r, target, p.timeout)
 		return
 	}
 	if p.stream {

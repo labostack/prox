@@ -2,6 +2,7 @@ package action
 
 import (
 	"bufio"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -137,4 +138,103 @@ func schemeOf(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+// serveConnect establishes a bidirectional TCP tunnel for HTTP CONNECT requests.
+//
+// Two modes are supported:
+//   - HTTP/1.1: hijack the connection and relay raw TCP bytes.
+//   - HTTP/2: use the ResponseWriter and request body as a framed
+//     bidirectional stream (HTTP/2 does not support Hijack).
+func serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL, timeout time.Duration) {
+	host := target.Host
+	if !strings.Contains(host, ":") {
+		switch target.Scheme {
+		case "https", "wss":
+			host += ":443"
+		default:
+			host += ":80"
+		}
+	}
+
+	upstream, err := net.DialTimeout("tcp", host, timeout)
+	if err != nil {
+		slog.Warn("connect dial failed",
+			"upstream", host,
+			"err", err,
+		)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	if r.ProtoAtLeast(2, 0) {
+		serveConnectH2(w, r, upstream)
+		return
+	}
+	serveConnectH1(w, upstream)
+}
+
+// serveConnectH1 handles CONNECT over HTTP/1.1 by hijacking the raw connection.
+func serveConnectH1(w http.ResponseWriter, upstream net.Conn) {
+	clientConn, clientBuf, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		upstream.Close()
+		slog.Error("connect hijack failed", "err", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if err != nil {
+		upstream.Close()
+		clientConn.Close()
+		return
+	}
+
+	go func() {
+		defer upstream.Close()
+		defer clientConn.Close()
+		io.Copy(upstream, clientBuf)
+	}()
+
+	defer upstream.Close()
+	defer clientConn.Close()
+	io.Copy(clientConn, upstream)
+}
+
+// serveConnectH2 handles CONNECT over HTTP/2 using the framed stream.
+// The request body carries client→upstream data and the ResponseWriter
+// carries upstream→client data, with immediate flushing per chunk.
+func serveConnectH2(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	go func() {
+		defer upstream.Close()
+		bufp := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufp)
+		io.CopyBuffer(upstream, r.Body, *bufp)
+	}()
+
+	defer upstream.Close()
+	flusher, canFlush := w.(http.Flusher)
+	bufp := copyBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer copyBufPool.Put(bufp)
+	for {
+		n, readErr := upstream.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }
