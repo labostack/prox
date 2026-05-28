@@ -1,26 +1,56 @@
 # Plugins
 
-Plugins are external executables that extend prox at runtime. They can dynamically manage balancer targets, authorize HTTP requests, modify upstream responses, and gate L4 TCP connections.
+Plugins are external executables that extend prox at runtime. They dynamically manage balancer targets, authorize HTTP requests, modify upstream responses, and gate L4 TCP connections.
 
 ## Overview
 
-- Plugins communicate with prox over **stdin/stdout** (JSON) for lifecycle events and **Unix sockets** (msgpack) for request-response hooks
-- Each plugin runs as a **child process**, automatically restarted on crash
-- The [Go SDK](sdk.md) handles all transport details — plugin authors just register callbacks
-- Target updates are applied **atomically** — zero lock contention on the data plane
+- Plugins communicate with prox over **stdin/stdout** (JSON) for lifecycle events and **Unix sockets** (msgpack) for request-response hooks.
+- Each plugin runs as a **child process**, automatically restarted on crash.
+- The [Go SDK](sdk.md) handles all transport details — plugin authors register callbacks only.
+- Target updates are applied **atomically** with zero lock contention on the data plane.
 
 ## Modes
 
 | Mode | Hooks | Transport | Use Case |
 |------|-------|-----------|----------|
-| Push-only | `OnConfigure` | stdin/stdout | Target discovery, DNS resolver |
+| Push-only | `OnConfigure` | stdin/stdout | Target discovery, DNS resolution |
 | Request-response | `OnRequest`, `OnResponse`, `OnConnect` | Unix socket (msgpack) | Auth, rate limiting, header injection |
 | Fire-and-forget | `OnDisconnect` | Unix socket (msgpack) | Connection statistics, usage tracking |
 | Hybrid | All | Both | Full middleware + discovery |
 
+## Building Plugins
+
+Plugins written as `.go` source files or Go package directories must be compiled with `prox build` before starting the server. Pre-compiled binaries are used as-is and must be executable.
+
+```bash
+# Compile all plugins defined in config
+prox build -config config.json5
+```
+
+This compiles each plugin source and places the binary alongside the source file. Rebuilds are **skipped** if the binary is newer than the source (mtime check).
+
+**Single file** — path ends in `.go`:
+
+```json5
+plugins: {
+  auth: { path: "./plugins/auth.go" }  // → builds ./plugins/auth
+}
+```
+
+**Directory** — path points to a Go package:
+
+```json5
+plugins: {
+  auth: { path: "./plugins/auth/" }  // → builds ./plugins/auth/auth
+}
+```
+
+!!! tip
+    Run `prox build` in CI/CD pipelines or Dockerfile build stages. `prox serve` expects pre-compiled binaries and returns an error if plugin source has not been compiled.
+
 ## Configuration
 
-Define your plugins in the global `plugins` block. Attach them at three levels:
+Plugins are defined in the global `plugins` block and attached at three levels: route, service, or action.
 
 ### Route-Level
 
@@ -69,91 +99,63 @@ actions: {
 
 ### Merge Order
 
-Plugins from all levels are merged per route: **service → action → route**. Duplicates are removed (first occurrence wins). The effective list determines execution order — service-level plugins run first, then action-level, then route-level.
+Plugins from all levels are merged per route in this order: **service → action → route**. Duplicates are removed (first occurrence wins). The effective list determines execution order — service-level plugins run first, then action-level, then route-level.
 
 ### Fields
 
-- `plugins` — list of plugin aliases (or literal paths) — available on route, service, and action
-- `plugin_timeout` — per-request timeout for plugin hook calls (default: 5s) — route-level only
-- `autostart` — start plugin at proxy startup without route bindings (default: false)
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `plugins` | `[]string` | — | Plugin aliases or literal paths. Available on routes, services, and actions. |
+| `plugin_timeout` | `duration` | `5s` | Per-request timeout for plugin hook calls. Route-level only. |
+| `autostart` | `bool` | `false` | Start plugin at proxy startup without route bindings. |
 
 ### Rules
 
-- Define `plugins` globally to map easy-to-read aliases to absolute or relative paths
-- Plugin paths are resolved relative to the config file's directory where they are defined
-- You can still define a raw path string (e.g. `"./plugins/auth.go"`) directly in a `plugins` array
-- **`.go` source files are compiled automatically** — no manual build step needed
-- Pre-compiled binaries are used as-is (must be executable)
-- A `balancer` is required only when using target discovery (not for auth-only plugins)
-- Multiple plugins can be attached to a single route (sequential execution, short-circuit on deny)
-- Plugins with `autostart: true` are spawned at startup without route bindings — useful for background routines, metrics, health monitors
-
-### Auto-compilation
-
-Prox can compile plugin sources automatically — no manual build step needed.
-
-**Single file** — path ends in `.go`:
-
-```json5
-  plugins: {
-    auth: { path: "./plugins/auth.go" } // → go build -o ./plugins/auth
-  }
-```
-
-**Directory** — path points to a Go package directory:
-
-```json5
-  plugins: {
-    auth: { path: "./plugins/auth/" } // → go build -o ./plugins/auth
-  }
-```
-
-Compiled binaries are placed next to the source. Rebuilds are **skipped** if the binary is newer than the source (mtime check).
-
-### Dependency Resolution
-
-If a plugin compilation fails and a `go.mod` file is present in its directory, prox will automatically run `go mod tidy` to resolve any missing third-party dependencies (such as the `github.com/dortanes/prox/sdk`), update the `go.sum` file, and retry the build. This ensures seamless support for Go Workspaces (`go.work`) during local development while guaranteeing flawless automated builds in clean, containerized, or production environments.
+- Plugin paths accept `.go` source files or Go package directories — compile with `prox build` before starting the server.
+- A `balancer` is required only when using target discovery (not for auth-only plugins).
+- Multiple plugins attach to a single route with sequential execution; deny verdicts short-circuit the chain.
+- Plugins with `autostart: true` spawn at startup without route bindings — suitable for background routines, metrics, and health monitors.
 
 ## Lifecycle
 
 ```
 1. prox starts → spawns plugin process
 2. prox sends "configure" for each bound route (or empty route for autostart plugins)
-3. plugin optionally sends "ready" with socket path and hooks
+3. Plugin optionally sends "ready" with socket path and hooks
 4. prox connects to the Unix socket (connection pool)
-5. plugin pushes "set_targets" whenever data changes
-6. for each request: prox calls hooks over socket, plugin responds
-7. on config reload → prox sends new "configure"
-8. on prox shutdown → stdin is closed → plugin should exit
+5. Plugin pushes "set_targets" whenever data changes
+6. For each request: prox calls hooks over socket, plugin responds
+7. On config reload → prox sends new "configure"
+8. On prox shutdown → stdin closes → plugin exits
 ```
 
 ### Crash Recovery
 
 If a plugin process exits unexpectedly:
 
-1. Targets **freeze** at the last known state
-2. Request-response hooks **fail open** (requests are allowed through)
-3. Prox restarts the plugin with **exponential backoff** (1s → 2s → 4s → ... → 30s max)
-4. After restart, prox re-sends `configure` for all bound routes
-5. The backoff resets after a successful message
+1. Targets **freeze** at the last known state.
+2. Request-response hooks **fail open** (requests pass through).
+3. prox restarts the plugin with **exponential backoff** (1s → 2s → 4s → … → 30s max).
+4. After restart, prox re-sends `configure` for all bound routes.
+5. The backoff resets after a successful message.
 
 ### Stderr
 
-Plugin stderr is forwarded to prox's logger at `debug` level, tagged with the plugin's alias from config:
+Plugin stderr is forwarded to the prox logger at `debug` level, tagged with the plugin alias from config:
 
 ```
 05:28:48 DBG [auth] 2026/05/28 05:28:48 token validated for user-abc123
 ```
 
-The tag name is resolved from the `plugins` registry key. For raw path references (not registered in `plugins`), the binary basename is used.
+The tag resolves from the `plugins` registry key. For raw path references (not registered in `plugins`), the binary basename is used.
 
 ## Performance
 
 | Operation | Overhead |
-|---|---|
+|-----------|----------|
 | Request routing (no hooks) | **None** — unchanged hot path |
-| `on_request` hook | ~50-100μs per call (Unix socket + msgpack) |
-| `on_response` hook | ~50-100μs per call |
-| `on_connect` hook (L4) | ~50-100μs per call |
+| `on_request` hook | ~50–100μs per call (Unix socket + msgpack) |
+| `on_response` hook | ~50–100μs per call |
+| `on_connect` hook (L4) | ~50–100μs per call |
 | `set_targets` push | O(1) atomic pointer store |
 | Plugin crash | Targets freeze, hooks fail open, auto-restart |

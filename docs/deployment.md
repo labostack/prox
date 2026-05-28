@@ -1,6 +1,10 @@
 # Deployment
 
+Production deployment patterns for prox, including containerized operation, configuration reloading, and L4/L7 mixed-mode dispatching.
+
 ## Docker
+
+Run prox with Docker Compose:
 
 ```yaml
 # docker-compose.yml
@@ -16,7 +20,7 @@ services:
     command: ["serve", "-config", "/etc/prox/config/"]
 ```
 
-Or with `docker run`:
+Standalone container:
 
 ```bash
 docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/dortanes/prox
@@ -24,18 +28,18 @@ docker run -v ./config.json5:/etc/prox/config.json5 -p 8080:8080 ghcr.io/dortane
 
 ## Hot Reload
 
-Config changes are picked up automatically via file watcher, or manually via `kill -HUP`. Both L4 and L7 routes are swapped atomically — in-flight connections finish with the old config, new connections use the new one. Invalid configs are rejected silently.
+Configuration changes are detected automatically via file watcher. Manual reload is also supported via `SIGHUP`. Both L4 and L7 routes are swapped atomically — in-flight connections complete with the previous configuration, new connections use the updated one. Invalid configurations are rejected silently.
 
-All loaded files are watched — editing a nested service fragment or route include triggers a full reload.
+All loaded files are watched. Editing a nested service fragment or route include triggers a full reload.
 
 ```
-prox serve -config config.json5          # watcher enabled by default
+prox serve -config config.json5            # watcher enabled by default
 prox serve -config config.json5 -watch=false
 ```
 
 ## L4 Dispatching
 
-When a service has any `pass` routes, prox automatically activates an L4 dispatcher. The dispatcher intercepts raw TCP connections **before** TLS termination:
+When a service contains any `pass` routes, prox activates an L4 dispatcher on that listener. The dispatcher intercepts raw TCP connections **before** TLS termination:
 
 ```
 Client → :443 TCP
@@ -48,9 +52,9 @@ Client → :443 TCP
 ```
 
 !!! note
-    `drop` routes work at L7 without the dispatcher (the connection hangs until timeout). When the dispatcher is already active due to `pass` routes, `drop` routes with domain patterns also participate in L4 matching — closing connections before TLS handshake.
+    Without the dispatcher, `drop` routes operate at L7 — the connection hangs until timeout. When the dispatcher is active (due to `pass` routes), `drop` routes with domain patterns also participate in L4 matching, closing connections before the TLS handshake.
 
-**Route order matters.** The dispatcher walks all routes (not just `pass` routes) in config order. The first domain match wins:
+**Route order matters.** The dispatcher evaluates all routes — not just `pass` routes — in configuration order. The first domain match wins.
 
 ```json5
 {
@@ -77,4 +81,4 @@ Client → :443 TCP
 }
 ```
 
-A single listener can mix L4 (TCP pass-through) and L7 (HTTP) routes seamlessly. Hot reload updates both L4 and L7 routes atomically.
+A single listener can mix L4 (TCP pass-through) and L7 (HTTP) routes. Hot reload updates both L4 and L7 routes atomically.

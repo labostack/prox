@@ -1,10 +1,10 @@
 # Configuration
 
-prox uses [JSON5](https://json5.org) for configuration — a superset of JSON with comments, trailing commas, and unquoted keys.
+prox uses [JSON5](https://json5.org) for configuration — a superset of JSON that supports comments, trailing commas, and unquoted keys.
 
 ## Structure
 
-Every config has three sections:
+Every configuration file contains up to four top-level sections:
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -23,11 +23,11 @@ Every config has three sections:
 └──────────────┴──────────────┴───────────────┴─────────────────┘
 ```
 
-**Key concept:** everything is reference-based. Routes point to actions by name, actions point to resources by name. But you can also inline them directly when a definition isn't reused.
+Configuration is reference-based. Routes point to actions by name, and actions point to resources by name. Both actions and resources may also be inlined directly when a definition is not reused.
 
 ## Services
 
-A service is a listener with routing rules. Services can be defined inline or loaded from external files.
+A service defines a listener with routing rules. Services can be defined inline or loaded from external files.
 
 ### Inline
 
@@ -56,10 +56,10 @@ Controls whether the TLS listener advertises HTTP/2 via ALPN negotiation.
 | `true`  | HTTP/2 enabled (default when TLS is on)             |
 | `false` | HTTP/1.1 only — required for WebSocket support      |
 
-Go's HTTP/2 implementation strips `Connection` and `Upgrade` hop-by-hop headers from incoming requests, which prevents WebSocket upgrade detection. Set `h2: false` on any TLS service that needs to handle WebSocket connections.
+Go's HTTP/2 implementation strips `Connection` and `Upgrade` hop-by-hop headers from incoming requests, preventing WebSocket upgrade detection. Set `h2: false` on any TLS service that handles WebSocket connections.
 
 !!! note
-    The `h2` option controls the **client-facing** listener protocol. The **upstream** protocol is controlled separately by the [`proto`](actions.md#upstream-protocol-proto) field in the action config.
+    The `h2` option controls the **client-facing** listener protocol. The **upstream** protocol is controlled separately by the [`proto`](actions.md#upstream-protocol-proto) field in the action configuration.
 
 This setting has no effect on non-TLS services (HTTP/2 requires TLS for ALPN negotiation).
 
@@ -78,8 +78,10 @@ Durations accept strings (`"5s"`, `"1m30s"`, `"5m"`) or numbers (interpreted as 
 | `flush_interval`           | `0`     | How often to flush buffered proxy response data. `-1` = flush immediately   |
 | `dial_timeout`             | action  | TCP dial timeout (defaults to the action's `timeout`)                       |
 | `keep_alive`               | `30s`   | TCP keep-alive interval                                                     |
-| `max_idle_conns`           | `100`   | Maximum idle connections in the connection pool                              |
-| `max_idle_conns_per_host`  | `10`    | Maximum idle connections per upstream host                                   |
+| `max_idle_conns`           | `4096`  | Maximum idle connections in the connection pool                              |
+| `max_idle_conns_per_host`  | `4096`  | Maximum idle connections per upstream host                                   |
+| `read_buffer_size`         | `32768` | Read buffer size in bytes for proxy transport (32 KB)                       |
+| `write_buffer_size`        | `32768` | Write buffer size in bytes for proxy transport (32 KB)                      |
 | `tls_handshake_timeout`    | `10s`   | TLS handshake deadline for HTTPS upstreams                                  |
 | `h2_read_idle_timeout`     | `30s`   | HTTP/2: send ping after this idle period                                    |
 | `h2_ping_timeout`          | `15s`   | HTTP/2: deadline for ping response                                          |
@@ -110,7 +112,7 @@ Durations accept strings (`"5s"`, `"1m30s"`, `"5m"`) or numbers (interpreted as 
 
 ### File reference
 
-A string value loads the service from an external JSON5 file:
+A string value loads the service definition from an external JSON5 file:
 
 ```json5
 {
@@ -141,17 +143,17 @@ Non-`.json5` files and subdirectories are ignored.
 
 ### Directory mode (CLI)
 
-You can also pass a directory directly to `-config`:
+A directory path may also be passed directly to `-config`:
 
 ```bash
 prox serve -config ./config/
 ```
 
-Every `.json5` file in the directory is treated as a service fragment. No root config file is needed.
+Every `.json5` file in the directory is treated as a service fragment. No root config file is required.
 
 ## Service Fragments
 
-A service fragment is the file format for external service definitions. It's a service definition with optional local `actions` and `resources`:
+A service fragment is the file format for external service definitions. It contains a service definition with optional local `actions` and `resources`:
 
 ```json5
 // web.json5
@@ -177,13 +179,13 @@ A service fragment is the file format for external service definitions. It's a s
 **Merge rules:**
 
 - Actions and resources from fragments are merged into the global pool alongside definitions from the root config.
-- Duplicate names across any files are a **validation error** — rename to avoid collisions.
-- Global actions from the root config are accessible by all services (e.g. a shared `health` action).
-- Fragments cannot reference other files — only one level of nesting.
+- Duplicate names across any files produce a **validation error** — rename to avoid collisions.
+- Global actions from the root config are accessible to all services (e.g., a shared `health` action).
+- Fragments cannot reference other files — only one level of nesting is supported.
 
 ## Validation
 
-Validate before deploying:
+Validate configuration before deploying:
 
 ```bash
 prox validate -config config.json5

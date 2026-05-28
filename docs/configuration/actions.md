@@ -1,6 +1,6 @@
 # Actions
 
-Actions define what happens when a route matches. They can be referenced by name or [inlined](routing.md#inline-actions) directly in a route.
+Actions define the behavior executed when a route matches. Actions can be referenced by name or [inlined](routing.md#inline-actions) directly in a route.
 
 ## `proxy` — Reverse Proxy
 
@@ -16,7 +16,7 @@ Actions define what happens when a route matches. They can be referenced by name
 
 The upstream field supports template placeholders: `{target}` (from the route's [balancer](load-balancing.md)) and any key from the route's `set` field. For example, `"{target}:{port}"` resolves both the balancer target and a route-level variable.
 
-The `fallback` action is invoked when no balancer target is available or the upstream is unreachable. This enables graceful degradation without returning 502.
+The `fallback` action is invoked when no balancer target is available or the upstream is unreachable, enabling graceful degradation without returning 502.
 
 ### Upstream protocol (`proto`)
 
@@ -46,7 +46,7 @@ HTTP/2 enables full-duplex streaming: the client can upload data while simultane
 
 ### Streaming mode (`stream`)
 
-When `stream` is `true`, the proxy bypasses `httputil.ReverseProxy` and uses a raw HTTP/1.1 tunnel. The request is forwarded over a raw TCP connection with the body streamed in a background goroutine, and the response is flushed immediately.
+When `stream` is `true`, the proxy bypasses `httputil.ReverseProxy` and establishes a raw HTTP/1.1 tunnel. The request is forwarded over a raw TCP connection with the body streamed in a background goroutine, and the response is flushed immediately.
 
 !!! note
     Prefer `proto: "h2"` for bidirectional streaming when the upstream supports HTTP/2. Use `stream: true` only for HTTP/1.1 upstreams that require raw tunnel behavior.
@@ -77,7 +77,7 @@ actions: {
 
 ### Headers
 
-Headers are injected into every request forwarded to the upstream. This is useful for setting a custom `Host` header, authentication tokens, or any other headers the upstream requires.
+Headers are injected into every request forwarded to the upstream. This applies to custom `Host` headers, authentication tokens, or any other headers required by the upstream.
 
 ```json5
 {
@@ -95,14 +95,14 @@ Headers are injected into every request forwarded to the upstream. This is usefu
 
 ### WebSocket support
 
-WebSocket connections are detected and handled automatically — no configuration needed. When a client sends an `Upgrade: websocket` request, prox:
+WebSocket connections are detected and handled automatically — no additional configuration is required. When a client sends an `Upgrade: websocket` request, prox:
 
 1. Dials the upstream directly via TCP
 2. Forwards the full HTTP upgrade handshake (including all configured `headers`)
 3. Establishes a bidirectional tunnel after the `101 Switching Protocols` response
 4. Relays raw bytes transparently until either side closes
 
-This works with any WebSocket library or protocol (RFC 6455). The proxy does not interpret WebSocket frames — raw bytes are relayed transparently. The `timeout` setting applies to the initial upstream dial.
+This is compatible with any WebSocket library or protocol (RFC 6455). The proxy does not interpret WebSocket frames — raw bytes are relayed transparently. The `timeout` setting applies to the initial upstream dial.
 
 ```json5
 // WebSocket-capable proxy — no extra config needed.
@@ -116,10 +116,10 @@ This works with any WebSocket library or protocol (RFC 6455). The proxy does not
 }
 ```
 
-If the upstream rejects the upgrade (e.g. returns 403), the rejection response is forwarded to the client as-is.
+If the upstream rejects the upgrade (e.g., returns 403), the rejection response is forwarded to the client as-is.
 
 !!! note
-    On TLS services, HTTP/2 is enabled by default. If you need WebSocket on a TLS service, set [`h2: false`](index.md#h2--http2-on-tls-listeners) to force HTTP/1.1 — Go's HTTP/2 strips the `Connection` and `Upgrade` headers required for WebSocket detection.
+    On TLS services, HTTP/2 is enabled by default. For WebSocket support on a TLS service, set [`h2: false`](index.md#h2--http2-on-tls-listeners) to force HTTP/1.1 — Go's HTTP/2 strips the `Connection` and `Upgrade` headers required for WebSocket detection.
 
 ## `static` — Static Response
 
@@ -132,7 +132,7 @@ If the upstream rejects the upgrade (e.g. returns 403), the rejection response i
 
 ### Template variables
 
-Static response bodies can contain `{variable}` placeholders that are interpolated at request time:
+Static response bodies support `{variable}` placeholders that are interpolated at request time:
 
 | Variable           | Description                    | Example               |
 | ------------------ | ------------------------------ | --------------------- |
@@ -145,7 +145,7 @@ Static response bodies can contain `{variable}` placeholders that are interpolat
 | `{method}`         | HTTP method                    | `GET`                 |
 | `{host}`           | Full Host header (with port)   | `sub.example.com:443` |
 
-For multiple `*` wildcards, captured values are joined with `.` — e.g. pattern `*.*.example.com` matching `a.b.example.com` gives `{match.domain}` = `a.b`. The `**` glob suffix is captured separately into `{match.glob}` — e.g. pattern `*.storage.**` matching `cdn.storage.example.com` gives `{match.domain}` = `cdn` and `{match.glob}` = `example.com`.
+For multiple `*` wildcards, captured values are joined with `.` — e.g., pattern `*.*.example.com` matching `a.b.example.com` produces `{match.domain}` = `a.b`. The `**` glob suffix is captured separately into `{match.glob}` — e.g., pattern `*.storage.**` matching `cdn.storage.example.com` produces `{match.domain}` = `cdn` and `{match.glob}` = `example.com`.
 
 ```json5
 {
@@ -160,7 +160,7 @@ For multiple `*` wildcards, captured values are joined with `.` — e.g. pattern
 // GET http://test.staging.example.com/ → "Env: staging, full host: test.staging.example.com"
 ```
 
-Bodies without `{` are served as-is with no overhead.
+Bodies without `{` are served as-is with no interpolation overhead.
 
 ## `serve` — File Server
 
@@ -219,19 +219,19 @@ Relays raw TCP connections to an upstream without TLS termination. The proxy pee
 **Constraints:**
 
 - `pass` routes **must** have a `domain` pattern (SNI matching)
-- `pass` routes **cannot** use `path` or `methods` (these are HTTP-level concepts — not available before TLS termination)
+- `pass` routes **cannot** use `path` or `methods` (these are HTTP-level concepts unavailable before TLS termination)
 
 See [L4 Dispatching](../deployment.md#l4-dispatching) for details on how pass routes interact with L7 routes.
 
 ## `drop` — Drop Connection
 
-Silently closes the connection without sending any response. Useful as a catch-all to reject unknown domains or unwanted traffic.
+Silently closes the connection without sending a response. Useful as a catch-all to reject unknown domains or unwanted traffic.
 
 | Field  | Type   | Required | Description |
 | ------ | ------ | -------- | ----------- |
 | `type` | string | ✓        | `"drop"`    |
 
-At L7 (HTTP), the TCP connection is hijacked and closed immediately — no HTTP response is sent. At L4 (when combined with `pass` routes), the raw TCP connection is closed before TLS handshake.
+At L7 (HTTP), the TCP connection is hijacked and closed immediately — no HTTP response is sent. At L4 (when combined with `pass` routes), the raw TCP connection is closed before the TLS handshake.
 
 ```json5
 // Reject all unmatched domains.
@@ -262,7 +262,7 @@ Use `text` for plain strings, `json` for structured data (avoids manual escaping
 }
 ```
 
-Inline resources work the same way:
+Inline resources follow the same format:
 
 ```json5
 {

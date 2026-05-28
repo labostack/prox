@@ -28,12 +28,12 @@ Routes can distribute requests across multiple upstream targets using a `balance
 | Type         | Description                                                           |
 | ------------ | --------------------------------------------------------------------- |
 | `roundrobin` | Distributes requests evenly in order across targets. Lock-free, O(1). |
-| `random`     | Selects a target at random each time.                                 |
+| `random`     | Selects a target at random per request.                               |
 | `leastconn`  | Routes to the target with the fewest active connections.              |
 
 ## The `{target}` Template
 
-The `{target}` placeholder in `upstream` is replaced with the address selected by the balancer. You can use it standalone or embedded in a URL:
+The `{target}` placeholder in `upstream` is replaced with the address selected by the balancer. It can be used standalone or embedded in a URL:
 
 ```json5
 // Bare target — becomes http://10.0.1.1:3505
@@ -47,11 +47,11 @@ upstream: "http://{target}/api/v1"
 
 - Balancers are only supported with `proxy` and `pass` action types
 - The action's `upstream` **must** contain `{target}` when a balancer is used
-- Targets must be non-empty and unique within a balancer (unless [plugins](../plugins/index.md) populate them)
+- Targets must be non-empty and unique within a balancer (unless [plugins](../plugins/index.md) populate them dynamically)
 
 ## L4 Pass-through
 
-Balancers also work with `pass` routes for L4 TCP load balancing. Each new connection gets a target from the balancer:
+Balancers also work with `pass` routes for L4 TCP load balancing. Each new connection receives a target from the balancer:
 
 ```json5
 {
@@ -69,14 +69,14 @@ Balancers also work with `pass` routes for L4 TCP load balancing. Each new conne
 
 ## WebSocket Pinning
 
-WebSocket connections through a balanced route work transparently — the balancer selects the target before the upgrade handshake, and the entire WebSocket session stays pinned to that target.
+WebSocket connections through a balanced route are handled transparently — the balancer selects the target before the upgrade handshake, and the entire WebSocket session remains pinned to that target.
 
 ## Connection Tracking (`leastconn`)
 
-The `leastconn` strategy tracks active connections per target. A connection is counted from the moment the balancer selects it until the request completes (HTTP response sent, WebSocket closed, or TCP relay finished). This works across both L7 proxy routes and L4 pass routes.
+The `leastconn` strategy tracks active connections per target. A connection is counted from the moment the balancer selects it until the request completes (HTTP response sent, WebSocket closed, or TCP relay finished). This applies to both L7 proxy routes and L4 pass routes.
 
 ```json5
-// Route to the server with the fewest active connections.
+// Route to the target with the fewest active connections.
 {
   match: { domain: "*.**", path: "/ws" },
   balancer: {

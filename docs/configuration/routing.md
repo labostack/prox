@@ -1,6 +1,6 @@
 # Routing
 
-Routes are evaluated in order — first match wins.
+Routes are evaluated in declaration order — the first match wins.
 
 ```json5
 {
@@ -29,7 +29,7 @@ At least one of `domain` or `path` must be specified. Omit `match` entirely for 
 Domain patterns use segment-based glob matching:
 
 - `*` matches **exactly one** domain label (like wildcard SSL certificates)
-- `cdn-*`, `*-prod` — partial wildcards match a label with a fixed prefix/suffix
+- `cdn-*`, `*-prod` — partial wildcards match a label with a fixed prefix or suffix
 - `**` matches **one or more** domain labels (only valid as the last segment)
 
 | Pattern              | Matches                                        | Does not match                          |
@@ -44,7 +44,7 @@ Domain patterns use segment-based glob matching:
 | `*.storage.**`       | `cdn.storage.example.com`, `cdn.storage.a.b.c` | `storage.example.com`, `cdn.storage`    |
 | `cdn-*.**`           | `cdn-us.example.com`, `cdn-eu.myapp.dev`       | `cdn.example.com`                       |
 
-Domain matching is **case-insensitive** and ports are stripped automatically (`example.com:443` → `example.com`).
+Domain matching is **case-insensitive**. Ports are stripped automatically (`example.com:443` → `example.com`).
 
 Domain patterns are also used for [L4 dispatching](../deployment.md#l4-dispatching) — the SNI hostname from the TLS ClientHello is matched against the same patterns.
 
@@ -69,7 +69,7 @@ Domain patterns are also used for [L4 dispatching](../deployment.md#l4-dispatchi
 
 ## Inline Actions
 
-Instead of referencing a named action, you can define one inline:
+Instead of referencing a named action, an action definition may be inlined directly:
 
 ```json5
 {
@@ -77,14 +77,14 @@ Instead of referencing a named action, you can define one inline:
   action: {
     type: "static",
     status: 200,
-    body_ref: { text: "OK" }, // inline resource too!
+    body_ref: { text: "OK" }, // inline resource
   },
 }
 ```
 
 ## Route Includes
 
-Routes can be loaded from external files. Use a string path instead of a route object in the `routes` array — the referenced file's routes are spliced in place, preserving order.
+Routes can be loaded from external files. A string path in the `routes` array references an external file whose routes are spliced in place, preserving order.
 
 ```json5
 {
@@ -100,7 +100,7 @@ Routes can be loaded from external files. Use a string path instead of a route o
 
 Route include files support two formats:
 
-**Bare array** — just the routes:
+**Bare array** — routes only:
 
 ```json5
 // routes/realtime.json5
@@ -130,7 +130,7 @@ Route include files support two formats:
 }
 ```
 
-You can mix inline routes and includes freely:
+Inline routes and includes may be mixed freely:
 
 ```json5
 {

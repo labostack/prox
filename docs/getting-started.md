@@ -1,12 +1,16 @@
 # Getting Started
 
-## Install
+Install prox, create a minimal configuration, and start proxying traffic.
+
+## Installation
+
+Install the latest release via `go install`:
 
 ```bash
 go install github.com/dortanes/prox/cmd/prox@latest
 ```
 
-Or build from source:
+To build from source:
 
 ```bash
 git clone https://github.com/dortanes/prox.git
@@ -14,9 +18,9 @@ cd prox
 go build -o prox ./cmd/prox
 ```
 
-## Create a config
+## Minimal Configuration
 
-Create `config.json5`:
+Create a `config.json5` file with a single service and action:
 
 ```json5
 {
@@ -41,20 +45,24 @@ Create `config.json5`:
 }
 ```
 
+This configuration listens on port 8080 and proxies all requests to `localhost:3000`.
+
 ## Validate
+
+Validate configuration before starting the server. This is recommended as a CI/CD step.
 
 ```bash
 prox validate -config config.json5
 # ✅ configuration is valid: config.json5 (1 file(s))
 ```
 
-## Run
+## Start the Server
 
 ```bash
 prox serve -config config.json5
 ```
 
-With debug logging:
+To enable debug-level logging:
 
 ```bash
 prox serve -config config.json5 -log-level debug
@@ -62,19 +70,19 @@ prox serve -config config.json5 -log-level debug
 
 ## Hot Reload
 
-Edit `config.json5` while the server is running — changes are picked up automatically.
+Configuration changes are detected automatically while the server is running. Editing `config.json5` triggers an atomic reload — in-flight connections complete with the previous configuration, new connections use the updated one.
 
-Or send SIGHUP:
+Manual reload via signal:
 
 ```bash
 kill -HUP $(pgrep prox)
 ```
 
-Invalid configs are rejected gracefully — the server keeps running with the last valid config.
+Invalid configurations are rejected gracefully. The server continues running with the last valid configuration.
 
 ## Directory Mode
 
-Instead of a single config file, you can use a directory of service fragments:
+Configuration can be split across multiple files in a directory. Each `.json5` file defines a separate service, with the filename (without extension) used as the service name.
 
 ```bash
 mkdir config
@@ -82,7 +90,7 @@ mkdir config
 prox serve -config ./config/
 ```
 
-Each `.json5` file becomes a service (name = filename without extension).
+See [Configuration](configuration/index.md) for the full configuration reference.
 
 ## CLI Reference
 
@@ -91,6 +99,7 @@ prox <command> [flags]
 
 Commands:
   serve      Start the proxy server
+  build      Compile plugin sources defined in config
   validate   Validate configuration (CI/CD)
   version    Print version
   help       Show help

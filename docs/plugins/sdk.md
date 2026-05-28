@@ -1,6 +1,6 @@
 # Go SDK
 
-The Go SDK (`github.com/dortanes/prox/sdk`) provides a clean callback API for writing plugins. It handles all transport details — stdin/stdout JSON, Unix socket msgpack framing, and the `ready` handshake.
+The Go SDK (`github.com/dortanes/prox/sdk`) provides a callback-based API for building plugins. It handles all transport details — stdin/stdout JSON messaging, Unix socket msgpack framing, and the `ready` handshake.
 
 ## Installation
 
@@ -59,21 +59,21 @@ func main() {
 
 Called when the plugin receives route configuration (on startup and reload).
 
-The `Route` struct contains:
+**Route fields:**
 
-| Field    | Type   | Description                                |
-|----------|--------|--------------------------------------------|
-| `ID`     | string | Stable identifier (`service:routeIndex`)   |
-| `Domain` | string | Domain pattern from config                 |
-| `Path`   | string | Path pattern from config                   |
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `string` | Stable identifier (`service:routeIndex`) |
+| `Domain` | `string` | Domain pattern from config |
+| `Path` | `string` | Path pattern from config |
 
 ### `OnRequest(func(req *Request) *Response)` — L7
 
 Called for every HTTP request on the route. Returns a verdict:
 
-- `sdk.Allow(opts...)` — approve the request, optionally inject headers
-- `sdk.Deny(status, body, opts...)` — reject with an HTTP error response
-- `sdk.Drop()` — silently close the connection (no HTTP response)
+- `sdk.Allow(opts...)` — approve the request, optionally inject headers.
+- `sdk.Deny(status, body, opts...)` — reject with an HTTP error response.
+- `sdk.Drop()` — silently close the connection (no HTTP response).
 
 ```go
 p.OnRequest(func(req *sdk.Request) *sdk.Response {
@@ -88,7 +88,7 @@ p.OnRequest(func(req *sdk.Request) *sdk.Response {
 
 ### `OnResponse(func(req *Request, resp *UpstreamResponse) *ResponseMod)` — L7
 
-Called after the upstream responds, before headers are sent to the client. Modify or remove headers, override the status code.
+Called after the upstream responds, before headers are sent to the client. Modify or remove headers, or override the status code.
 
 ```go
 p.OnResponse(func(req *sdk.Request, resp *sdk.UpstreamResponse) *sdk.ResponseMod {
@@ -102,7 +102,7 @@ p.OnResponse(func(req *sdk.Request, resp *sdk.UpstreamResponse) *sdk.ResponseMod
 
 ### `OnConnect(func(conn *ConnRequest) *ConnResponse)` — L4
 
-Called for raw TCP connections on `pass` routes (before TLS relay). Only has access to SNI domain and remote address.
+Called for raw TCP connections on `pass` routes (before TLS relay). Only SNI domain and remote address are available.
 
 ```go
 p.OnConnect(func(conn *sdk.ConnRequest) *sdk.ConnResponse {
@@ -124,79 +124,85 @@ p.OnDisconnect(func(event *sdk.DisconnectEvent) {
 })
 ```
 
-| Field        | Type   | Description                              |
-|--------------|--------|------------------------------------------|
-| `RouteID`    | string | Route identifier (`service:routeIndex`)  |
-| `Target`     | string | Backend target host (SNI/domain)         |
-| `RemoteAddr` | string | Client IP:port                           |
-| `BytesRx`    | int64  | Bytes received from client (upload)      |
-| `BytesTx`    | int64  | Bytes transmitted to client (download)   |
-| `DurationMs` | int64  | Connection duration in milliseconds      |
+**DisconnectEvent fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `RouteID` | `string` | Route identifier (`service:routeIndex`) |
+| `Target` | `string` | Backend target host (SNI/domain) |
+| `RemoteAddr` | `string` | Client IP:port |
+| `BytesRx` | `int64` | Bytes received from client (upload) |
+| `BytesTx` | `int64` | Bytes transmitted to client (download) |
+| `DurationMs` | `int64` | Connection duration in milliseconds |
 
 ## Request Fields
 
-| Field           | Type              | Description                                  |
-|-----------------|-------------------|----------------------------------------------|
-| `RouteID`       | `string`          | Route identifier (`service:routeIndex`)      |
-| `Method`        | `string`          | HTTP method (`GET`, `POST`, etc.)            |
-| `Path`          | `string`          | Request path (`/api/users`)                  |
-| `Query`         | `string`          | Raw query string (`foo=bar&baz=1`)           |
-| `Domain`        | `string`          | Request host without port                    |
-| `Host`          | `string`          | Full Host header including port              |
-| `Proto`         | `string`          | HTTP protocol (`HTTP/1.1`, `HTTP/2.0`)       |
-| `RemoteAddr`    | `string`          | Client IP:port                               |
-| `ContentLength` | `int64`           | Request body size (`-1` if unknown)          |
-| `Headers`       | `map[string]string` | All request headers (first value only)     |
-| `Body`          | `[]byte`          | Request body (capped at 64KB)                |
-| `MatchDomain`   | `string`          | Captured `*` wildcard value(s)               |
-| `MatchGlob`     | `string`          | Captured `**` glob suffix                    |
-| `MatchPath`     | `string`          | Path pattern from config                     |
-| `Vars`          | `map[string]string` | Route-level `set` variables                |
-| `Target`        | `string`          | Backend target selected by balancer          |
+| Field | Type | Description |
+|-------|------|-------------|
+| `RouteID` | `string` | Route identifier (`service:routeIndex`) |
+| `Method` | `string` | HTTP method (`GET`, `POST`, etc.) |
+| `Path` | `string` | Request path (`/api/users`) |
+| `Query` | `string` | Raw query string (`foo=bar&baz=1`) |
+| `Domain` | `string` | Request host without port |
+| `Host` | `string` | Full Host header including port |
+| `Proto` | `string` | HTTP protocol (`HTTP/1.1`, `HTTP/2.0`) |
+| `RemoteAddr` | `string` | Client IP:port |
+| `ContentLength` | `int64` | Request body size (`-1` if unknown) |
+| `Headers` | `map[string]string` | All request headers (first value only) |
+| `Body` | `[]byte` | Request body (capped at 64KB) |
+| `MatchDomain` | `string` | Captured `*` wildcard value(s) |
+| `MatchGlob` | `string` | Captured `**` glob suffix |
+| `MatchPath` | `string` | Path pattern from config |
+| `Vars` | `map[string]string` | Route-level `set` variables |
+| `Target` | `string` | Backend target selected by balancer |
 
 ### Helper Methods
 
-- `req.Header(key)` — get a request header value
-- `req.QueryParam(key)` — get a query parameter value
+| Method | Description |
+|--------|-------------|
+| `req.Header(key)` | Returns the value of a request header |
+| `req.QueryParam(key)` | Returns the value of a query parameter |
 
 ## Response Helpers
 
 ### Request Verdicts
 
 ```go
-sdk.Allow(opts...)                    // approve request
-sdk.Deny(status, body, opts...)       // reject with HTTP response
-sdk.Fallback(opts...)                 // route request to the fallback action
-sdk.Drop()                            // silently close connection
+sdk.Allow(opts...)                    // Approve request
+sdk.Deny(status, body, opts...)       // Reject with HTTP response
+sdk.Fallback(opts...)                 // Route to the fallback action
+sdk.Drop()                            // Silently close connection
 
-sdk.WithHeader(key, value)            // inject header (on allow: into request, on deny: into response)
-sdk.WithSpeedLimit(down, up)          // set per-connection bandwidth cap (Mbps)
-sdk.WithSpeedLimit(down, up, groupKey)// set grouped bandwidth cap (all connections with same key share the budget)
-sdk.WithCleanQuery()                  // remove query string from upstream request
-sdk.WithRewritePath(path)             // override upstream request path
+sdk.WithHeader(key, value)            // Inject header (allow: into request, deny: into response)
+sdk.WithSpeedLimit(down, up)          // Per-connection bandwidth cap (Mbps)
+sdk.WithSpeedLimit(down, up, groupKey)// Grouped bandwidth cap (shared by connections with same key)
+sdk.WithCleanQuery()                  // Remove query string from upstream request
+sdk.WithRewritePath(path)             // Override upstream request path
 ```
 
 ### Response Modifications
 
 ```go
-sdk.ModifyResponse(opts...)           // modify upstream response
-sdk.NoResponseMod()                   // pass through unchanged
+sdk.ModifyResponse(opts...)           // Modify upstream response
+sdk.NoResponseMod()                   // Pass through unchanged
 
-sdk.WithResponseHeader(key, value)    // add/override response header
-sdk.RemoveResponseHeader(key)         // remove response header
-sdk.WithResponseStatus(status)        // override status code
+sdk.WithResponseHeader(key, value)    // Add or override response header
+sdk.RemoveResponseHeader(key)         // Remove response header
+sdk.WithResponseStatus(status)        // Override status code
 ```
 
 ### L4 Connection Verdicts
 
 ```go
-sdk.AcceptConn()                      // allow TCP connection
-sdk.RejectConn()                      // close TCP connection
+sdk.AcceptConn()                      // Allow TCP connection
+sdk.RejectConn()                      // Close TCP connection
 ```
 
 ## Push API
 
-For target discovery, use the push methods (these go over stdin/stdout, no socket needed):
+Target discovery and speed limiting use push methods over stdin/stdout (no socket required).
+
+### Target Updates
 
 ```go
 // By route ID:
@@ -222,7 +228,7 @@ p.SetActionGroupedTargets("dynamic_proxy", map[string][]string{
 })
 ```
 
-With domain pattern `*.**`, a request to `de.example.com` captures `de` → the balancer picks from the `"de"` group only. Each group gets its own sub-balancer with the route's strategy.
+With domain pattern `*.**`, a request to `de.example.com` captures `de` — the balancer picks from the `"de"` group only. Each group gets its own sub-balancer using the route's strategy.
 
 ### Speed Limiting
 
@@ -245,7 +251,7 @@ p.SetSpeedLimit(routeID, sdk.SpeedLimit{DownloadMbps: 50, GroupKey: userID})
 
 When multiple limits apply (config, push, response), the most restrictive value wins.
 
-### Methods
+### Method Reference
 
 | Method | Description |
 |--------|-------------|
