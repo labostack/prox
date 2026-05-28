@@ -18,6 +18,7 @@ import (
 
 	"github.com/dortanes/prox/internal/config"
 	"github.com/dortanes/prox/internal/logger"
+	"github.com/dortanes/prox/internal/plugin"
 	"github.com/dortanes/prox/internal/server"
 	"github.com/dortanes/prox/internal/watcher"
 )
@@ -42,6 +43,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		os.Exit(runServe(os.Args[2:]))
+	case "build":
+		os.Exit(runBuild(os.Args[2:]))
 	case "validate":
 		os.Exit(runValidate(os.Args[2:]))
 	case "version":
@@ -65,11 +68,12 @@ Usage:
 
 Commands:
   serve      Start the proxy server
+  build      Compile plugin sources into binaries
   validate   Validate configuration (for CI/CD pipelines)
   version    Print version
   help       Show this help
 
-Flags (serve, validate):
+Flags (serve, build, validate):
   -config string      Path to config file or directory (default "config.json5")
   -log-level string   Log level: debug, info, warn, error (default "info")
   -watch              Watch config files for changes and auto-reload (default true)
@@ -290,4 +294,45 @@ func runValidate(args []string) int {
 		*configPath, len(result.Paths))
 	return 0
 }
+
+// runBuild compiles all plugin sources referenced in the configuration.
+func runBuild(args []string) int {
+	fs := flag.NewFlagSet("build", flag.ExitOnError)
+	configPath := fs.String("config", "config.json5", "path to config file or directory")
+	_ = fs.Parse(args)
+
+	if err := logger.Setup(logger.Config{Level: "info"}); err != nil {
+		fmt.Fprintf(os.Stderr, "logger init error: %v\n", err)
+		return 1
+	}
+	defer logger.Close()
+
+	result, err := config.LoadFile(*configPath)
+	if err != nil {
+		slog.Error("config load failed", "err", err)
+		return 1
+	}
+
+	// Collect all unique plugin paths.
+	var paths []string
+	for _, p := range result.Config.Plugins {
+		if p.Path != "" {
+			paths = append(paths, p.Path)
+		}
+	}
+
+	if len(paths) == 0 {
+		slog.Info("no plugins to build")
+		return 0
+	}
+
+	if err := plugin.BuildPlugins(paths); err != nil {
+		slog.Error("plugin build failed", "err", err)
+		return 1
+	}
+
+	slog.Info("plugins built", "count", len(paths))
+	return 0
+}
+
 

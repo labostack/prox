@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Process wraps a single plugin subprocess.
@@ -27,7 +26,8 @@ type Process struct {
 }
 
 // startProcess spawns the plugin binary and wires up stdin/stdout.
-// If the path ends in ".go", the source is compiled automatically.
+// The path must point to a pre-compiled binary, or a source path whose
+// binary has been compiled via 'prox build'.
 func startProcess(name, path string) (*Process, error) {
 	binPath, err := resolvePluginBinary(path)
 	if err != nil {
@@ -73,172 +73,58 @@ func startProcess(name, path string) (*Process, error) {
 	return p, nil
 }
 
-// resolvePluginBinary returns the path to an executable binary.
+// resolvePluginBinary returns the path to a pre-compiled binary.
 //
 // Supported plugin path formats:
 //   - Pre-compiled binary: used as-is
-//   - ".go" source file: compiled to a sibling binary (./plugins/resolver.go → ./plugins/resolver)
-//   - Directory: compiled as a Go package (./plugins/resolver/ → ./plugins/resolver)
+//   - ".go" source file: expected binary is the path without the .go extension
+//   - Directory: expected binary is the directory path itself
+//   - Bare path (no extension, not a dir): tries path.go → binary at path
 //
-// Compilation runs from the source's directory so go.mod and third-party
-// imports are resolved naturally by the Go toolchain.
+// Source paths (.go files and directories) are NOT compiled at runtime.
+// Run 'prox build' to compile plugins before starting the server.
 func resolvePluginBinary(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
+		// Path doesn't exist — try path+".go" (e.g. "plugins/auth/main" → binary "plugins/auth/main").
+		goPath := path + ".go"
+		if _, goErr := os.Stat(goPath); goErr == nil {
+			// Source exists at path.go — binary is expected at path (without .go).
+			binPath := path
+			if _, binErr := os.Stat(binPath); binErr != nil {
+				return "", fmt.Errorf("plugin %q is not compiled — run 'prox build' first", filepath.Base(path))
+			}
+			return binPath, nil
+		}
+		// Try parent directory as a Go package.
+		dir := filepath.Dir(path)
+		if dirInfo, dirErr := os.Stat(dir); dirErr == nil && dirInfo.IsDir() {
+			absDir, _ := filepath.Abs(dir)
+			if _, binErr := os.Stat(absDir); binErr != nil {
+				return "", fmt.Errorf("plugin %q is not compiled — run 'prox build' first", filepath.Base(dir))
+			}
+			return absDir, nil
+		}
 		return "", fmt.Errorf("plugin path %q: %w", path, err)
 	}
 
-	if info.IsDir() {
-		return buildPluginDir(path)
+	var binPath string
+	switch {
+	case info.IsDir():
+		binPath, _ = filepath.Abs(path)
+	case strings.HasSuffix(path, ".go"):
+		binPath = strings.TrimSuffix(path, ".go")
+	default:
+		// Pre-compiled binary.
+		return path, nil
 	}
 
-	if strings.HasSuffix(path, ".go") {
-		return buildPluginFile(path, info)
-	}
-
-	// Pre-compiled binary.
-	return path, nil
-}
-
-// buildPluginFile compiles a .go source file's package into a sibling binary.
-// Builds the entire package directory (not just the single file) so that
-// all .go files in the package are included.
-func buildPluginFile(path string, srcInfo os.FileInfo) (string, error) {
-	binPath := strings.TrimSuffix(path, ".go")
-
-	absPath, _ := filepath.Abs(path)
-	dir := filepath.Dir(absPath)
-
-	// Check the newest .go file in the directory for mtime comparison,
-	// since the entire package is compiled.
-	newestMod := newestGoFile(dir)
-	if newestMod == nil {
-		newestMod = srcInfo
-	}
-
-	if skipBuild(binPath, newestMod.ModTime()) {
-		return binPath, nil
-	}
-
-	slog.Debug("building plugin",
-		"source", filepath.Base(path),
-		"output", filepath.Base(binPath),
-	)
-
-	absBin, _ := filepath.Abs(binPath)
-	if err := runBuild(dir, "-o", absBin, "."); err != nil {
-		return "", err
+	// Verify the compiled binary exists.
+	if _, err := os.Stat(binPath); err != nil {
+		return "", fmt.Errorf("plugin %q is not compiled — run 'prox build' first", filepath.Base(path))
 	}
 
 	return binPath, nil
-}
-
-// buildPluginDir compiles a Go package directory into a binary named after the directory.
-func buildPluginDir(dir string) (string, error) {
-	absDir, _ := filepath.Abs(dir)
-	binPath := absDir // ./plugins/resolver/ → ./plugins/resolver (binary)
-
-	newestMod := newestGoFile(absDir)
-	if newestMod == nil {
-		return "", fmt.Errorf("plugin dir %q contains no .go files", dir)
-	}
-
-	if skipBuild(binPath, newestMod.ModTime()) {
-		return binPath, nil
-	}
-
-	slog.Debug("building plugin",
-		"source", filepath.Base(dir)+"/",
-		"output", filepath.Base(binPath),
-	)
-
-	if err := runBuild(absDir, "-o", binPath, "."); err != nil {
-		return "", err
-	}
-
-	return binPath, nil
-}
-
-// newestGoFile returns the os.FileInfo of the most recently modified .go file
-// in the directory. Returns nil if the directory contains no .go files.
-func newestGoFile(dir string) os.FileInfo {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var newest os.FileInfo
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if newest == nil || info.ModTime().After(newest.ModTime()) {
-			newest = info
-		}
-	}
-	return newest
-}
-
-// skipBuild returns true if the binary exists and is newer than srcMod.
-func skipBuild(binPath string, srcMod time.Time) bool {
-	binInfo, err := os.Stat(binPath)
-	if err != nil {
-		return false
-	}
-	if binInfo.ModTime().After(srcMod) {
-		slog.Debug("plugin up to date",
-			"plugin", filepath.Base(binPath),
-		)
-		return true
-	}
-	return false
-}
-
-// runBuild runs the 'go build' command. If it fails and a go.mod file is present
-// in the plugin directory, it attempts to resolve missing dependencies by running
-// 'go mod tidy' and then retries the build.
-func runBuild(dir string, args ...string) error {
-	cmd := exec.Command("go", append([]string{"build"}, args...)...)
-	cmd.Dir = dir
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-
-	err := cmd.Run()
-	if err == nil {
-		return nil
-	}
-
-	goModPath := filepath.Join(dir, "go.mod")
-	if _, statErr := os.Stat(goModPath); statErr == nil {
-		slog.Warn("plugin build failed, resolving dependencies", "dir", dir, "err", err)
-		if tidyErr := tidyPluginDir(dir); tidyErr != nil {
-			slog.Warn("plugin dependency resolution failed", "dir", dir, "err", tidyErr)
-		} else {
-			slog.Debug("retrying plugin build", "dir", dir)
-			cmdRetry := exec.Command("go", append([]string{"build"}, args...)...)
-			cmdRetry.Dir = dir
-			cmdRetry.Stderr = os.Stderr
-			cmdRetry.Stdout = os.Stdout
-			if retryErr := cmdRetry.Run(); retryErr == nil {
-				return nil
-			}
-		}
-	}
-
-	return fmt.Errorf("building plugin: %w", err)
-}
-
-// tidyPluginDir runs `go mod tidy` in the plugin directory if go.mod is present.
-func tidyPluginDir(dir string) error {
-	slog.Debug("tidying plugin dependencies", "dir", dir)
-	cmd := exec.Command("go", "mod", "tidy")
-	cmd.Dir = dir
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-	return cmd.Run()
 }
 
 // Send writes a JSON request to the plugin's stdin.
