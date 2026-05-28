@@ -846,6 +846,10 @@ func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				panic(http.ErrAbortHandler)
 			}
 			if res.Fallback {
+				// CONNECT tunnels cannot fall back — drop the connection.
+				if r.Method == http.MethodConnect {
+					panic(http.ErrAbortHandler)
+				}
 				useFallback = true
 			} else if !res.Allow {
 				status := res.Status
