@@ -213,6 +213,20 @@ File-based logging with global and per-route access logs:
 }
 ```
 
+Disable access logging for specific routes or actions with `access_log: "off"` — useful for high-frequency transport routes that would otherwise flood the log:
+
+```json5
+// Per-route
+{ match: { path: "/tunnel/*" }, access_log: "off", action: "transport" }
+
+// Per-action (applies to all routes using this action)
+actions: {
+  transport: { type: "proxy", upstream: "localhost:8443", stream: true, access_log: "off" },
+}
+```
+
+Route-level `access_log` takes priority over action-level.
+
 Log files support rotation via `SIGHUP` — send the signal to reopen all log files after rotating them with tools like `logrotate`.
 
 ## Performance
