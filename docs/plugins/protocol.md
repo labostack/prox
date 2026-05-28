@@ -241,6 +241,7 @@ Fire-and-forget — **no response is expected**. Prox writes the frame and does 
 | Field      | msgpack key | Type   |
 |------------|-------------|--------|
 | RouteID    | `r`         | string |
+| Target     | `tg`        | string |
 | RemoteAddr | `a`         | string |
 | BytesRx    | `rx`        | int64  |
 | BytesTx    | `tx`        | int64  |

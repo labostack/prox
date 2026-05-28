@@ -119,14 +119,15 @@ Called after a connection ends (handler returns). Receives connection statistics
 
 ```go
 p.OnDisconnect(func(event *sdk.DisconnectEvent) {
-    log.Printf("route=%s bytes_rx=%d bytes_tx=%d duration=%dms",
-        event.RouteID, event.BytesRx, event.BytesTx, event.DurationMs)
+    log.Printf("route=%s target=%s bytes_rx=%d bytes_tx=%d duration=%dms",
+        event.RouteID, event.Target, event.BytesRx, event.BytesTx, event.DurationMs)
 })
 ```
 
 | Field        | Type   | Description                              |
 |--------------|--------|------------------------------------------|
 | `RouteID`    | string | Route identifier (`service:routeIndex`)  |
+| `Target`     | string | Backend target host (SNI/domain)         |
 | `RemoteAddr` | string | Client IP:port                           |
 | `BytesRx`    | int64  | Bytes received from client (upload)      |
 | `BytesTx`    | int64  | Bytes transmitted to client (download)   |
