@@ -194,12 +194,12 @@ func serveConnectH1(w http.ResponseWriter, upstream net.Conn) {
 	go func() {
 		defer upstream.Close()
 		defer clientConn.Close()
-		io.Copy(upstream, clientBuf)
+		_, _ = io.Copy(upstream, clientBuf)
 	}()
 
 	defer upstream.Close()
 	defer clientConn.Close()
-	io.Copy(clientConn, upstream)
+	_, _ = io.Copy(clientConn, upstream)
 }
 
 // serveConnectH2 handles CONNECT over HTTP/2 using the framed stream.
@@ -215,7 +215,7 @@ func serveConnectH2(w http.ResponseWriter, r *http.Request, upstream net.Conn) {
 		defer upstream.Close()
 		bufp := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufp)
-		io.CopyBuffer(upstream, r.Body, *bufp)
+		_, _ = io.CopyBuffer(upstream, r.Body, *bufp)
 	}()
 
 	defer upstream.Close()
