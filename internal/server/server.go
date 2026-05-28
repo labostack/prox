@@ -238,6 +238,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  idleTimeout,
+		ErrorLog:     logger.NewServerErrorLog(),
 	}
 
 	ms := &managedServer{
@@ -579,6 +580,7 @@ func (ms *managedServer) serveDirect() error {
 			WriteTimeout: ms.server.WriteTimeout,
 			IdleTimeout:  ms.server.IdleTimeout,
 			TLSConfig:    ms.server.TLSConfig,
+			ErrorLog:     ms.server.ErrorLog,
 		}
 		ms.servers[i] = srv
 
