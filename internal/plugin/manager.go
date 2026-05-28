@@ -54,8 +54,8 @@ type speedIndex struct {
 }
 
 // Manager supervises plugin processes and routes push messages to balancers.
-// It also provides the hook call API (OnRequest, OnResponse, OnConnect)
-// for the HTTP handler and L4 dispatcher.
+// It also provides the hook call API (OnRequest, OnResponse, OnConnect,
+// OnDisconnect) for the HTTP handler and L4 dispatcher.
 type Manager struct {
 	mu           sync.Mutex
 	processes    map[string]*managed // keyed by absolute plugin path
@@ -66,6 +66,13 @@ type Manager struct {
 	index        atomic.Pointer[hookIndex]  // lock-free hot-path lookup
 	speeds       atomic.Pointer[speedIndex] // lock-free speed limit lookup
 	groupBuckets *throttle.GroupRegistry    // shared group speed buckets
+	disconnects  chan disconnectMsg          // buffered fire-and-forget channel
+}
+
+// disconnectMsg carries a pre-serialized frame to fire at plugin callers.
+type disconnectMsg struct {
+	frame   []byte
+	callers []*Caller
 }
 
 // managed wraps a plugin process with restart state and hook caller.
@@ -83,6 +90,7 @@ func NewManager() *Manager {
 	return &Manager{
 		processes:    make(map[string]*managed),
 		groupBuckets: throttle.NewGroupRegistry(),
+		disconnects:  make(chan disconnectMsg, 256),
 	}
 }
 
@@ -165,6 +173,13 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.processPushes(ctx, mg)
 		}(mg)
 	}
+
+	// Start disconnect drain goroutine.
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.drainDisconnects(ctx)
+	}()
 
 	return nil
 }
@@ -400,6 +415,40 @@ func (m *Manager) OnConnect(ctx context.Context, routeID string, conn *ConnInfo)
 	}
 
 	return &ConnResult{Allow: true}, nil
+}
+
+// OnDisconnect fires a disconnect notification to all plugins bound to the route.
+// Non-blocking: marshals the frame and sends to a buffered channel.
+// Dropped silently if the channel is full (fire-and-forget).
+func (m *Manager) OnDisconnect(routeID string, info *DisconnectInfo) {
+	callers, _ := m.lookupHook(routeID, HookOnDisconnect)
+	if len(callers) == 0 {
+		return
+	}
+	frame, err := MarshalEnvelope(HookTypeDisconnect, info)
+	if err != nil {
+		return
+	}
+	select {
+	case m.disconnects <- disconnectMsg{frame: frame, callers: callers}:
+	default:
+	}
+}
+
+// drainDisconnects processes fire-and-forget disconnect notifications.
+func (m *Manager) drainDisconnects(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-m.disconnects:
+			for _, c := range msg.callers {
+				if err := c.Fire(msg.frame); err != nil {
+					slog.Debug("disconnect notify failed", "err", err)
+				}
+			}
+		}
+	}
 }
 
 // lookupHook returns callers and timeout for a route+hook combination.

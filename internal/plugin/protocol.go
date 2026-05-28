@@ -23,18 +23,20 @@ const (
 
 // Hook names advertised by plugins.
 const (
-	HookOnRequest  = "on_request"
-	HookOnResponse = "on_response"
-	HookOnConnect  = "on_connect"
+	HookOnRequest    = "on_request"
+	HookOnResponse   = "on_response"
+	HookOnConnect    = "on_connect"
+	HookOnDisconnect = "on_disconnect"
 )
 
 // HookType identifies the hook being invoked over the socket.
 type HookType byte
 
 const (
-	HookTypeRequest  HookType = 1
-	HookTypeResponse HookType = 2
-	HookTypeConnect  HookType = 3
+	HookTypeRequest    HookType = 1
+	HookTypeResponse   HookType = 2
+	HookTypeConnect    HookType = 3
+	HookTypeDisconnect HookType = 4
 )
 
 // Request is a message sent from prox to a plugin via stdin.
@@ -155,6 +157,16 @@ type ConnInfo struct {
 // ConnResult is the plugin's verdict for an on_connect hook.
 type ConnResult struct {
 	Allow bool `msgpack:"ok"`
+}
+
+// DisconnectInfo carries connection statistics for on_disconnect hooks.
+// Fire-and-forget: no response is expected from the plugin.
+type DisconnectInfo struct {
+	RouteID    string `msgpack:"r"`
+	RemoteAddr string `msgpack:"a"`
+	BytesRx    int64  `msgpack:"rx"`
+	BytesTx    int64  `msgpack:"tx"`
+	DurationMs int64  `msgpack:"ms"`
 }
 
 // SpeedLimit holds bandwidth caps from plugin responses.

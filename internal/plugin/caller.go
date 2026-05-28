@@ -104,6 +104,25 @@ func (c *Caller) CallConnect(ctx context.Context, conn *ConnInfo) (*ConnResult, 
 	return &result, nil
 }
 
+// Fire sends a frame without waiting for a response (fire-and-forget).
+// Used for disconnect notifications. The connection is returned to the pool
+// after writing; the plugin's read loop simply advances to the next frame.
+func (c *Caller) Fire(frame []byte) error {
+	conn, err := c.getConn()
+	if err != nil {
+		return err
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+	if err := writeFrame(conn, frame); err != nil {
+		_ = conn.SetWriteDeadline(time.Time{})
+		c.discardConn(conn)
+		return err
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+	c.putConn(conn)
+	return nil
+}
+
 // Close drains the connection pool and closes all connections.
 func (c *Caller) Close() {
 	c.mu.Lock()
