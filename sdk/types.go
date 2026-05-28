@@ -129,6 +129,7 @@ type ConnResponse struct {
 // DisconnectEvent carries connection statistics for on_disconnect hooks.
 type DisconnectEvent struct {
 	RouteID    string `msgpack:"r" json:"route_id"`
+	Target     string `msgpack:"tg,omitempty" json:"target,omitempty"`
 	RemoteAddr string `msgpack:"a" json:"remote_addr"`
 	BytesRx    int64  `msgpack:"rx" json:"bytes_rx"`
 	BytesTx    int64  `msgpack:"tx" json:"bytes_tx"`

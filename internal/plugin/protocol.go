@@ -159,10 +159,10 @@ type ConnResult struct {
 	Allow bool `msgpack:"ok"`
 }
 
-// DisconnectInfo carries connection statistics for on_disconnect hooks.
-// Fire-and-forget: no response is expected from the plugin.
+// DisconnectInfo carries statistics for the on_disconnect hook.
 type DisconnectInfo struct {
 	RouteID    string `msgpack:"r"`
+	Target     string `msgpack:"tg,omitempty"`
 	RemoteAddr string `msgpack:"a"`
 	BytesRx    int64  `msgpack:"rx"`
 	BytesTx    int64  `msgpack:"tx"`
