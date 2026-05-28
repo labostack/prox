@@ -238,7 +238,7 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 
 	up, err := net.DialTimeout("tcp", upstream, upstreamDialTimeout)
 	if err != nil {
-		slog.Error("l4 upstream dial failed",
+		slog.Warn("l4 upstream dial failed",
 			"upstream", upstream,
 			"err", err,
 			"remote", client.RemoteAddr(),
@@ -255,7 +255,7 @@ func (d *Dispatcher) relayPass(client net.Conn, peekedBytes []byte, upstream str
 
 	// Replay the peeked ClientHello bytes to the upstream.
 	if _, err := up.Write(peekedBytes); err != nil {
-		slog.Error("l4 upstream write failed",
+		slog.Warn("l4 upstream write failed",
 			"upstream", upstream,
 			"err", err,
 		)

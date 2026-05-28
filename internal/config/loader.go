@@ -149,6 +149,7 @@ type rawService struct {
 	TLS     bool            `json:"tls"`
 	TLSCert string          `json:"tls_cert,omitempty"`
 	TLSKey  string          `json:"tls_key,omitempty"`
+	H2      *bool           `json:"h2,omitempty"`
 	Config  *ServerConfig   `json:"config,omitempty"`
 	Plugins []string        `json:"plugins,omitempty"`
 	Routes  []rawRouteEntry `json:"routes"`
@@ -225,6 +226,7 @@ func (lc *loadContext) loadRootFile(path string) (*Config, error) {
 				TLS:     entry.Inline.TLS,
 				TLSCert: entry.Inline.TLSCert,
 				TLSKey:  entry.Inline.TLSKey,
+				H2:      entry.Inline.H2,
 				Config:  entry.Inline.Config,
 				Plugins: entry.Inline.Plugins,
 				Routes:  routes,
@@ -319,15 +321,17 @@ func (lc *loadContext) loadDirectory(dir string) (*Config, error) {
 // It combines a Service definition with optional local Actions and Resources.
 // Uses rawRouteEntry to support route includes.
 type rawFragment struct {
-	Listen    string               `json:"listen"`
-	TLS       bool                 `json:"tls"`
-	TLSCert   string               `json:"tls_cert,omitempty"`
-	TLSKey    string               `json:"tls_key,omitempty"`
-	Config    *ServerConfig        `json:"config,omitempty"`
-	Routes    []rawRouteEntry      `json:"routes"`
-	Plugins   map[string]*Plugin   `json:"plugins"`
-	Actions   map[string]*Action   `json:"actions"`
-	Resources map[string]*Resource `json:"resources"`
+	Listen         string               `json:"listen"`
+	TLS            bool                 `json:"tls"`
+	TLSCert        string               `json:"tls_cert,omitempty"`
+	TLSKey         string               `json:"tls_key,omitempty"`
+	H2             *bool                `json:"h2,omitempty"`
+	Config         *ServerConfig        `json:"config,omitempty"`
+	ServicePlugins []string             `json:"service_plugins,omitempty"` // service-level plugin refs
+	Routes         []rawRouteEntry      `json:"routes"`
+	Plugins        map[string]*Plugin   `json:"plugins"`
+	Actions        map[string]*Action   `json:"actions"`
+	Resources      map[string]*Resource `json:"resources"`
 }
 
 // loadFragment loads a single .json5 file as a service fragment, merges its
@@ -387,7 +391,9 @@ func (lc *loadContext) loadFragment(path string, parent *Config) (*Service, erro
 		TLS:     frag.TLS,
 		TLSCert: frag.TLSCert,
 		TLSKey:  frag.TLSKey,
+		H2:      frag.H2,
 		Config:  frag.Config,
+		Plugins: frag.ServicePlugins,
 		Routes:  routes,
 	}, nil
 }

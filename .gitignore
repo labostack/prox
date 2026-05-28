@@ -20,5 +20,15 @@ Thumbs.db
 # Test
 coverage.out
 coverage.html
+*.test
+*.prof
+
+# Debug
+__debug_bin*
+
+# Environment
+.env
+
+# Agent
 GEMINI.md
 .gemini

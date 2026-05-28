@@ -315,8 +315,8 @@ func buildTransport(proto string, svcCfg *config.ServerConfig, dialTimeout, resp
 	maxIdle := 4096
 	maxIdlePerHost := 4096
 	tlsHandshake := 10 * time.Second
-	readBuf := 4096
-	writeBuf := 4096
+	readBuf := 32768
+	writeBuf := 32768
 	disableCompression := true // better default for reverse proxy
 	if svcCfg != nil {
 		if svcCfg.MaxIdleConns > 0 {

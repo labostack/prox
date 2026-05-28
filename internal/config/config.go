@@ -67,11 +67,11 @@ type ServerConfig struct {
 	// Transport tuning — connection pool and keep-alive.
 	DialTimeout         Duration `json:"dial_timeout,omitempty"`            // TCP dial timeout (default: action timeout)
 	KeepAlive           Duration `json:"keep_alive,omitempty"`              // TCP keep-alive interval (default: 30s)
-	MaxIdleConns        int      `json:"max_idle_conns,omitempty"`          // Max idle connections (default: 256)
-	MaxIdleConnsPerHost int      `json:"max_idle_conns_per_host,omitempty"` // Max idle per host (default: 128)
+	MaxIdleConns        int      `json:"max_idle_conns,omitempty"`          // Max idle connections (default: 4096)
+	MaxIdleConnsPerHost int      `json:"max_idle_conns_per_host,omitempty"` // Max idle per host (default: 4096)
 	TLSHandshakeTimeout Duration `json:"tls_handshake_timeout,omitempty"`   // TLS handshake deadline (default: 10s)
 
-	// Transport I/O buffer sizes in bytes (default: 65536).
+	// Transport I/O buffer sizes in bytes (default: 32768).
 	ReadBufferSize  int `json:"read_buffer_size,omitempty"`
 	WriteBufferSize int `json:"write_buffer_size,omitempty"`
 

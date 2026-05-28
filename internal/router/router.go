@@ -220,8 +220,6 @@ func buildBalancer(cfg *config.BalancerConfig) balancer.Balancer {
 	}
 }
 
-// Match finds the first route matching the given request.
-// Returns the action name (empty if no match) and injects MatchResult into context.
 // MatchAction returns only the action name for the matching route, without
 // allocating a MatchResult or modifying the request context. Used by the
 // handler fast path when plugins and access logging are disabled.

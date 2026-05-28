@@ -766,8 +766,8 @@ func (m *Manager) GetSpeedLimit(routeID string) SpeedEntry {
 
 // handleSetSpeed routes speed limit pushes to the appropriate routes.
 func (m *Manager) handleSetSpeed(mg *managed, push Push) {
-	downloadBps := mbpsToBytes(push.Params.DownloadMbps)
-	uploadBps := mbpsToBytes(push.Params.UploadMbps)
+	downloadBps := throttle.MbpsToBytes(push.Params.DownloadMbps)
+	uploadBps := throttle.MbpsToBytes(push.Params.UploadMbps)
 
 	entry := SpeedEntry{
 		DownloadBps: downloadBps,
@@ -830,13 +830,5 @@ func (m *Manager) handleSetSpeed(mg *managed, push Push) {
 	if push.Params.GroupKey != "" {
 		m.groupBuckets.UpdateRate(push.Params.GroupKey, downloadBps, uploadBps)
 	}
-}
-
-// mbpsToBytes converts megabits per second to bytes per second.
-func mbpsToBytes(mbps float64) int64 {
-	if mbps <= 0 {
-		return 0
-	}
-	return int64(mbps * 1_000_000 / 8)
 }
 
