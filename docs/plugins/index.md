@@ -138,7 +138,13 @@ If a plugin process exits unexpectedly:
 
 ### Stderr
 
-Plugin stderr is forwarded to prox's logger at `debug` level. Use it for diagnostics.
+Plugin stderr is forwarded to prox's logger at `debug` level, tagged with the plugin's alias from config:
+
+```
+05:28:48 DBG [auth] 2026/05/28 05:28:48 token validated for user-abc123
+```
+
+The tag name is resolved from the `plugins` registry key. For raw path references (not registered in `plugins`), the binary basename is used.
 
 ## Performance
 
