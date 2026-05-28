@@ -232,7 +232,7 @@ func (rt *Router) MatchAction(r *http.Request) string {
 
 	var hostSegments []string
 	if rt.needsDomainMatch {
-		host := stripPort(r.Host)
+		host := resolveHost(r)
 		hostSegments = strings.Split(strings.ToLower(host), ".")
 	}
 
@@ -257,7 +257,7 @@ func (rt *Router) MatchAction(r *http.Request) string {
 func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	if rt.isCatchAllOnly {
 		route := rt.routes[0]
-		host := stripPort(r.Host)
+		host := resolveHost(r)
 		result := &MatchResult{
 			RouteIndex:     0,
 			Action:         route.action,
@@ -283,12 +283,9 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	}
 
 	var hostSegments []string
-	var host string
+	host := resolveHost(r)
 	if rt.needsDomainMatch {
-		host = stripPort(r.Host)
 		hostSegments = strings.Split(strings.ToLower(host), ".")
-	} else {
-		host = stripPort(r.Host)
 	}
 
 	for i, route := range rt.routes {
@@ -432,6 +429,16 @@ func matchSegment(pat, seg string) (bool, string) {
 		return false, ""
 	}
 	return true, seg[len(prefix) : len(seg)-len(suffix)]
+}
+
+// resolveHost returns the effective hostname for routing.
+// For CONNECT requests with TLS, it uses the SNI server name (which is
+// the clean hostname), because r.Host typically contains host:port.
+func resolveHost(r *http.Request) string {
+	if r.Method == "CONNECT" && r.TLS != nil && r.TLS.ServerName != "" {
+		return r.TLS.ServerName
+	}
+	return stripPort(r.Host)
 }
 
 // stripPort removes the port from a host string.
