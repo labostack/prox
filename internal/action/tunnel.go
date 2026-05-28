@@ -2,6 +2,7 @@ package action
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -141,8 +142,10 @@ func schemeOf(r *http.Request) string {
 }
 
 // serveConnect establishes a bidirectional TCP tunnel for HTTP CONNECT requests.
+// It chains the CONNECT to the upstream proxy: after dialing, it sends
+// CONNECT with the original target host so the upstream knows where to dial.
 //
-// Two modes are supported:
+// Two client-side modes are supported:
 //   - HTTP/1.1: hijack the connection and relay raw TCP bytes.
 //   - HTTP/2: use the ResponseWriter and request body as a framed
 //     bidirectional stream (HTTP/2 does not support Hijack).
@@ -167,11 +170,55 @@ func serveConnect(w http.ResponseWriter, r *http.Request, target *url.URL, timeo
 		return
 	}
 
+	// Chain the CONNECT to the upstream proxy so it knows the actual target.
+	connectTarget := r.Host
+	if connectTarget == "" {
+		connectTarget = r.URL.Host
+	}
+	if err := chainConnect(upstream, connectTarget, timeout); err != nil {
+		upstream.Close()
+		slog.Warn("upstream CONNECT failed",
+			"upstream", host,
+			"target", connectTarget,
+			"err", err,
+		)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
 	if r.ProtoAtLeast(2, 0) {
 		serveConnectH2(w, r, upstream)
 		return
 	}
 	serveConnectH1(w, upstream)
+}
+
+// chainConnect sends a CONNECT request to the upstream proxy and waits for
+// a successful (2xx) response. This establishes the second leg of the tunnel
+// so the upstream proxy knows where to dial.
+func chainConnect(upstream net.Conn, target string, timeout time.Duration) error {
+	_ = upstream.SetDeadline(time.Now().Add(timeout))
+	defer func() { _ = upstream.SetDeadline(time.Time{}) }()
+
+	req := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n"
+	if _, err := upstream.Write([]byte(req)); err != nil {
+		return fmt.Errorf("write CONNECT: %w", err)
+	}
+
+	// Use a minimal reader — the response is a single status line + headers.
+	// A large buffered reader could consume bytes beyond the response that
+	// belong to the tunnel data stream.
+	br := bufio.NewReaderSize(upstream, 256)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upstream returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // serveConnectH1 handles CONNECT over HTTP/1.1 by hijacking the raw connection.
