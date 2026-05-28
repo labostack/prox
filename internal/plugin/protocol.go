@@ -19,6 +19,7 @@ const (
 	MethodSetTargets = "set_targets"
 	MethodSetSpeed   = "set_speed"
 	MethodReady      = "ready"
+	MethodLog        = "log"
 )
 
 // Hook names advertised by plugins.
@@ -83,6 +84,11 @@ type PushParams struct {
 	DownloadMbps float64 `json:"download_mbps,omitempty"`
 	UploadMbps   float64 `json:"upload_mbps,omitempty"`
 	GroupKey     string  `json:"group_key,omitempty"`
+
+	// Log-specific fields (only when Method == "log").
+	Level   string `json:"level,omitempty"`
+	Message string `json:"message,omitempty"`
+	Args    []any  `json:"args,omitempty"`
 }
 
 // --- Socket protocol types (msgpack) ---

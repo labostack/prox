@@ -141,7 +141,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		mg := &managed{name: pluginName, path: pluginPath, proc: proc}
 		m.processes[pluginPath] = mg
 
-		slog.Info("plugin started",
+		slog.Debug("plugin started",
 			"plugin", pluginName,
 			"pid", proc.cmd.Process.Pid,
 		)
@@ -204,7 +204,7 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 	// Stop plugins no longer referenced.
 	for path, mg := range m.processes {
 		if _, ok := needed[path]; !ok {
-			slog.Info("plugin stopped",
+			slog.Debug("plugin stopped",
 				"plugin", mg.name,
 			)
 			if mg.caller != nil {
@@ -232,7 +232,7 @@ func (m *Manager) Reconfigure(bindings []*Binding, routes map[string]*RouteInfo)
 			mg = &managed{name: pluginName, path: pluginPath, proc: proc}
 			m.processes[pluginPath] = mg
 
-			slog.Info("plugin started",
+			slog.Debug("plugin started",
 				"plugin", pluginName,
 				"pid", proc.cmd.Process.Pid,
 			)
@@ -545,12 +545,35 @@ func (m *Manager) handlePush(mg *managed, push Push) {
 	case MethodReady:
 		m.handleReady(mg, push)
 
+	case MethodLog:
+		handleLog(mg, push)
+
 	default:
 		slog.Warn("plugin unknown push method",
 			"plugin", mg.name,
 			"method", push.Method,
 		)
 	}
+}
+
+// handleLog routes a plugin log message to prox's slog.
+func handleLog(mg *managed, push Push) {
+	var level slog.Level
+	switch push.Params.Level {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	attrs := make([]any, 0, 2+len(push.Params.Args))
+	attrs = append(attrs, "plugin", mg.name)
+	attrs = append(attrs, push.Params.Args...)
+	slog.Log(context.Background(), level, push.Params.Message, attrs...)
 }
 
 // handleReady processes a plugin's capability declaration.
@@ -587,7 +610,7 @@ func (m *Manager) handleReady(mg *managed, push Push) {
 	m.rebuildIndexLocked()
 	m.mu.Unlock()
 
-	slog.Info("plugin ready",
+	slog.Debug("plugin ready",
 		"plugin", mg.name,
 		"hooks", push.Params.Hooks,
 	)
@@ -708,7 +731,7 @@ func (m *Manager) restartPlugin(ctx context.Context, mg *managed) {
 
 	mg.proc = proc
 
-	slog.Info("plugin restarted",
+	slog.Debug("plugin restarted",
 		"plugin", mg.name,
 		"pid", proc.cmd.Process.Pid,
 		"attempt", mg.restart,

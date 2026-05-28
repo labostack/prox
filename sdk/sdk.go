@@ -144,6 +144,32 @@ func (p *Plugin) SetActionSpeedLimit(action string, limit SpeedLimit) {
 	})
 }
 
+// Log sends a log message at the given level through the proxy's logger.
+// Level must be one of: "debug", "info", "warn", "error".
+// Args are slog-style key-value pairs (e.g. "key", value, "key2", value2).
+func (p *Plugin) Log(level, msg string, args ...any) {
+	p.send(logMsg{
+		Method: "log",
+		Params: logParams{
+			Level:   level,
+			Message: msg,
+			Args:    args,
+		},
+	})
+}
+
+// Debug logs a message at debug level.
+func (p *Plugin) Debug(msg string, args ...any) { p.Log("debug", msg, args...) }
+
+// Info logs a message at info level.
+func (p *Plugin) Info(msg string, args ...any) { p.Log("info", msg, args...) }
+
+// Warn logs a message at warn level.
+func (p *Plugin) Warn(msg string, args ...any) { p.Log("warn", msg, args...) }
+
+// Error logs a message at error level.
+func (p *Plugin) Error(msg string, args ...any) { p.Log("error", msg, args...) }
+
 // Run starts the plugin event loop. It blocks until stdin is closed.
 // Call this after registering all handlers.
 func (p *Plugin) Run() {
@@ -279,6 +305,17 @@ type pushParams struct {
 	DownloadMbps float64             `json:"download_mbps,omitempty"`
 	UploadMbps   float64             `json:"upload_mbps,omitempty"`
 	GroupKey     string              `json:"group_key,omitempty"`
+}
+
+type logMsg struct {
+	Method string    `json:"method"`
+	Params logParams `json:"params"`
+}
+
+type logParams struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Args    []any  `json:"args,omitempty"`
 }
 
 func init() {
