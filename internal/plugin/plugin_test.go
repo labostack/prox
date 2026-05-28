@@ -110,8 +110,12 @@ func TestNewestGoFile(t *testing.T) {
 	// Explicitly set mtimes — filesystem granularity varies across OS/FS.
 	past := time.Now().Add(-1 * time.Hour)
 	future := time.Now().Add(1 * time.Hour)
-	os.Chtimes(aPath, past, past)
-	os.Chtimes(bPath, future, future)
+	if err := os.Chtimes(aPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(bPath, future, future); err != nil {
+		t.Fatal(err)
+	}
 
 	newest := newestGoFile(dir)
 	if newest == nil {
