@@ -16,7 +16,7 @@ prox is a modular reverse proxy for HTTP and raw TCP traffic. It provides config
 
 **Hot reload** — Edit configuration while the server is running. Changes are applied atomically — in-flight connections complete with the previous configuration, new connections use the updated one.
 
-**TLS** — Multi-certificate SNI with directory-based certificate loading. Certificates are matched automatically by domain.
+**TLS** — Multi-certificate SNI with directory-based certificate loading and automatic certificate management via ACME (Let's Encrypt, ZeroSSL). Certificates are obtained, renewed, and matched automatically by domain. See [TLS & Certificates](tls.md).
 
 **WebSocket** — Transparent proxying with session pinning to upstream targets.
 

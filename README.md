@@ -55,6 +55,7 @@ Minimal configuration:
 - **Hot reload** — zero-downtime config swap via file watcher or SIGHUP
 - **WebSocket & HTTP/2** — transparent proxying with h2c upstream support
 - **TLS** — multi-cert SNI with directory-based certificate loading
+- **Automatic HTTPS** — ACME certificates via Let's Encrypt / ZeroSSL with [Cloudflare DNS](https://dortanes.github.io/prox/tls) for wildcard support
 
 ## Performance
 

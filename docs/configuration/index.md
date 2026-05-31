@@ -37,8 +37,9 @@ A service defines a listener with routing rules. Services can be defined inline 
     my_site: {
       listen: ":8080",         // required
       tls: true,               // optional, default: false
-      tls_cert: "/path/cert",  // required if tls: true
-      tls_key: "/path/key",    // required if tls: true
+      tls_cert: "/path/cert",  // required if tls: true (unless acme is set)
+      tls_key: "/path/key",    // required if tls: true (single-file mode)
+      acme: {},                // optional, automatic certificates via ACME
       h2: false,               // optional, default: true. Set false for WebSocket
       config: {},              // optional, per-service tuning
       routes: [...]            // required, at least one
@@ -62,6 +63,8 @@ Go's HTTP/2 implementation strips `Connection` and `Upgrade` hop-by-hop headers 
     The `h2` option controls the **client-facing** listener protocol. The **upstream** protocol is controlled separately by the [`proto`](actions.md#upstream-protocol-proto) field in the action configuration.
 
 This setting has no effect on non-TLS services (HTTP/2 requires TLS for ALPN negotiation).
+
+For manual certificate setup, automatic ACME certificates, and advanced TLS options, see [TLS & Certificates](../tls.md).
 
 ### Service config
 
