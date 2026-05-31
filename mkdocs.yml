@@ -49,6 +49,7 @@ nav:
     - Load Balancing: configuration/load-balancing.md
     - Speed Limiting: configuration/speed-limiting.md
     - Logging: configuration/logging.md
+  - Admin API: admin-api.md
   - TLS & Certificates: tls.md
   - Plugins:
     - Overview: plugins/index.md

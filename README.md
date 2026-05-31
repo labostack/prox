@@ -53,6 +53,7 @@ Minimal configuration:
 - **Speed limiting** — per-route, per-connection, or shared bandwidth caps
 - **Plugin middleware** — auth, response modification, service discovery via [Go SDK](https://dortanes.github.io/prox/plugins/sdk)
 - **Hot reload** — zero-downtime config swap via file watcher or SIGHUP
+- **Admin API** — optional REST API for [health checks, reload, and runtime inspection](https://dortanes.github.io/prox/admin-api)
 - **WebSocket & HTTP/2** — transparent proxying with h2c upstream support
 - **TLS** — multi-cert SNI with directory-based certificate loading
 - **Automatic HTTPS** — ACME certificates via Let's Encrypt / ZeroSSL with [Cloudflare DNS](https://dortanes.github.io/prox/tls) for wildcard support
