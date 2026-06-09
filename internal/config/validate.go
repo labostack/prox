@@ -138,20 +138,28 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 }
 
 // validatePath ensures the path pattern is well-formed.
+// Supports comma-separated patterns (e.g. "/api/*, /ws").
 func (v *validator) validatePath(prefix, path string) {
 	if path == "" {
 		return // already reported above
 	}
 
-	if !strings.HasPrefix(path, "/") {
-		v.addIssue("%s: path must start with /", prefix)
-		return
-	}
+	for _, raw := range strings.Split(path, ",") {
+		p := strings.TrimSpace(raw)
+		if p == "" {
+			continue
+		}
 
-	// Wildcard is only valid at the end: "/api/*"
-	starIdx := strings.Index(path, "*")
-	if starIdx != -1 && starIdx != len(path)-1 {
-		v.addIssue("%s: wildcard * is only allowed at the end of a path", prefix)
+		if !strings.HasPrefix(p, "/") {
+			v.addIssue("%s: path %q must start with /", prefix, p)
+			continue
+		}
+
+		// Wildcard is only valid at the end: "/api/*"
+		starIdx := strings.Index(p, "*")
+		if starIdx != -1 && starIdx != len(p)-1 {
+			v.addIssue("%s: wildcard * is only allowed at the end of a path pattern (in %q)", prefix, p)
+		}
 	}
 }
 
