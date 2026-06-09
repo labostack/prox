@@ -79,6 +79,9 @@ actions: {
 
 Headers are injected into every request forwarded to the upstream. This applies to custom `Host` headers, authentication tokens, or any other headers required by the upstream.
 
+!!! note
+    prox automatically sets `X-Forwarded-For`, `X-Forwarded-Host`, and `X-Forwarded-Proto` on every proxied request. You do not need to add these manually.
+
 ```json5
 {
   match: { domain: "*.**" },
