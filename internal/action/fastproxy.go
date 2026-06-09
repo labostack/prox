@@ -22,6 +22,9 @@ type fastStaticProxy struct {
 }
 
 func (fp *fastStaticProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Capture the original host before overwriting for X-Forwarded-Host.
+	origHost := r.Host
+
 	// Rewrite request URL and Host directly in-place.
 	r.URL.Scheme = fp.target.Scheme
 	r.URL.Host = fp.target.Host
@@ -58,6 +61,10 @@ func (fp *fastStaticProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r.Header["X-Forwarded-For"] = []string{clientIP}
 		}
 	}
+
+	// Set X-Forwarded-Host and X-Forwarded-Proto to match SetXForwarded() behavior.
+	r.Header.Set("X-Forwarded-Host", origHost)
+	r.Header.Set("X-Forwarded-Proto", schemeOf(r))
 
 	resp, err := fp.transport.RoundTrip(r)
 	if err != nil {
