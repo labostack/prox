@@ -79,9 +79,7 @@ func (rt *Router) HasSpeed() bool { return rt.hasSpeed }
 // compiledRoute is an optimized, pre-processed representation of a config route.
 type compiledRoute struct {
 	action  string
-	path    string
-	isWild  bool            // true for wildcard paths like "/api/*"
-	prefix  string          // for wildcards: the prefix before "*"
+	paths   []pathEntry     // one or more path patterns (OR logic); empty = match all
 	methods map[string]bool // nil means "all methods"
 
 	// Domain matching — segment-based glob.
@@ -104,6 +102,13 @@ type compiledRoute struct {
 	uploadBps      int64            // per-connection upload rate in bytes/sec
 }
 
+// pathEntry holds a single precomputed path pattern.
+type pathEntry struct {
+	raw    string // original pattern, e.g. "/api/*"
+	isWild bool   // true for wildcard paths like "/api/*"
+	prefix string // for wildcards: the prefix before "*"
+}
+
 // New compiles a list of config routes into a Router.
 func New(routes []*config.Route) *Router {
 	compiled := make([]*compiledRoute, 0, len(routes))
@@ -115,13 +120,22 @@ func New(routes []*config.Route) *Router {
 
 		// Nil match = catch-all route (matches everything).
 		if r.Match != nil {
-			cr.path = r.Match.Path
 			cr.domain = r.Match.Domain
 
-			// Pre-compute wildcard prefix.
-			if strings.HasSuffix(r.Match.Path, "/*") {
-				cr.isWild = true
-				cr.prefix = strings.TrimSuffix(r.Match.Path, "*")
+			// Pre-compute path entries — split comma-separated patterns.
+			if r.Match.Path != "" {
+				for _, raw := range strings.Split(r.Match.Path, ",") {
+					p := strings.TrimSpace(raw)
+					if p == "" {
+						continue
+					}
+					pe := pathEntry{raw: p}
+					if strings.HasSuffix(p, "/*") {
+						pe.isWild = true
+						pe.prefix = strings.TrimSuffix(p, "*")
+					}
+					cr.paths = append(cr.paths, pe)
+				}
 			}
 
 			// Pre-compute domain segments for glob matching.
@@ -177,7 +191,7 @@ func New(routes []*config.Route) *Router {
 
 	if len(compiled) == 1 {
 		cr := compiled[0]
-		if cr.path == "" && cr.domainSegments == nil && cr.methods == nil {
+		if len(cr.paths) == 0 && cr.domainSegments == nil && cr.methods == nil {
 			rt.isCatchAllOnly = true
 			rt.catchAllAction = cr.action
 		}
@@ -304,7 +318,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			DomainPattern:  route.domain,
 			MatchDomain:    strings.Join(captures, "."),
 			MatchGlob:      globTail,
-			MatchPath:      route.path,
+			MatchPath:      route.matchedPathPattern(r.URL.Path),
 			Domain:         host,
 			Path:           r.URL.Path,
 			Vars:           route.vars,
@@ -333,16 +347,36 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	return r, ""
 }
 
-// matchPath checks if the request path matches this route's pattern.
-// An empty path matches all paths.
+// matchPath checks if the request path matches any of this route's path patterns.
+// An empty paths slice matches all paths.
 func (cr *compiledRoute) matchPath(reqPath string) bool {
-	if cr.path == "" {
+	if len(cr.paths) == 0 {
 		return true
 	}
-	if cr.isWild {
-		return strings.HasPrefix(reqPath, cr.prefix)
+	for _, pe := range cr.paths {
+		if pe.isWild {
+			if strings.HasPrefix(reqPath, pe.prefix) {
+				return true
+			}
+		} else if reqPath == pe.raw {
+			return true
+		}
 	}
-	return reqPath == cr.path
+	return false
+}
+
+// matchedPathPattern returns the specific pattern that matched the request path.
+func (cr *compiledRoute) matchedPathPattern(reqPath string) string {
+	for _, pe := range cr.paths {
+		if pe.isWild {
+			if strings.HasPrefix(reqPath, pe.prefix) {
+				return pe.raw
+			}
+		} else if reqPath == pe.raw {
+			return pe.raw
+		}
+	}
+	return ""
 }
 
 // matchMethod checks if the request method is allowed.
