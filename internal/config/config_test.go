@@ -1444,3 +1444,211 @@ func TestLoad_BalancerLeastConn(t *testing.T) {
 		t.Errorf("expected 3 targets, got %d", len(route.Balancer.Targets))
 	}
 }
+
+// --- S3 storage config validation ---
+
+func TestLoad_ACMES3Valid(t *testing.T) {
+	raw := `{
+		services: {
+			web: {
+				listen: ":443",
+				tls: true,
+				acme: {
+					email: "admin@example.com",
+					storage_type: "s3",
+					s3: {
+						bucket: "my-certs",
+						region: "us-west-2",
+						access_key: "AKID",
+						secret_key: "secret",
+						prefix: "prox/",
+						use_path_style: true,
+					},
+				},
+				routes: [
+					{ match: { path: "/" }, action: "a" },
+				],
+			},
+		},
+		actions: {
+			a: { type: "proxy", upstream: "localhost:80" },
+		},
+	}`
+
+	cfg, err := Load([]byte(raw))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	acme := cfg.Services["web"].ACME
+	if acme.StorageType != "s3" {
+		t.Errorf("storage_type = %q, want %q", acme.StorageType, "s3")
+	}
+	if acme.S3 == nil {
+		t.Fatal("expected S3 config to be set")
+	}
+	if acme.S3.Bucket != "my-certs" {
+		t.Errorf("bucket = %q, want %q", acme.S3.Bucket, "my-certs")
+	}
+	if acme.S3.Region != "us-west-2" {
+		t.Errorf("region = %q, want %q", acme.S3.Region, "us-west-2")
+	}
+	if !acme.S3.UsePathStyle {
+		t.Error("expected use_path_style to be true")
+	}
+}
+
+func TestLoad_ACMES3MissingConfig(t *testing.T) {
+	raw := `{
+		services: {
+			web: {
+				listen: ":443",
+				tls: true,
+				acme: {
+					email: "admin@example.com",
+					storage_type: "s3",
+				},
+				routes: [
+					{ match: { path: "/" }, action: "a" },
+				],
+			},
+		},
+		actions: {
+			a: { type: "proxy", upstream: "localhost:80" },
+		},
+	}`
+
+	_, err := Load([]byte(raw))
+	if err == nil {
+		t.Fatal("expected error when s3 config is missing")
+	}
+	if !strings.Contains(err.Error(), "acme.s3 is required") {
+		t.Errorf("error should mention missing s3 config, got: %v", err)
+	}
+}
+
+func TestLoad_ACMES3MissingBucket(t *testing.T) {
+	raw := `{
+		services: {
+			web: {
+				listen: ":443",
+				tls: true,
+				acme: {
+					email: "admin@example.com",
+					storage_type: "s3",
+					s3: {
+						region: "us-east-1",
+					},
+				},
+				routes: [
+					{ match: { path: "/" }, action: "a" },
+				],
+			},
+		},
+		actions: {
+			a: { type: "proxy", upstream: "localhost:80" },
+		},
+	}`
+
+	_, err := Load([]byte(raw))
+	if err == nil {
+		t.Fatal("expected error when bucket is missing")
+	}
+	if !strings.Contains(err.Error(), "acme.s3.bucket is required") {
+		t.Errorf("error should mention missing bucket, got: %v", err)
+	}
+}
+
+func TestLoad_ACMES3MismatchedCredentials(t *testing.T) {
+	raw := `{
+		services: {
+			web: {
+				listen: ":443",
+				tls: true,
+				acme: {
+					email: "admin@example.com",
+					storage_type: "s3",
+					s3: {
+						bucket: "my-certs",
+						access_key: "AKID",
+					},
+				},
+				routes: [
+					{ match: { path: "/" }, action: "a" },
+				],
+			},
+		},
+		actions: {
+			a: { type: "proxy", upstream: "localhost:80" },
+		},
+	}`
+
+	_, err := Load([]byte(raw))
+	if err == nil {
+		t.Fatal("expected error for mismatched credentials")
+	}
+	if !strings.Contains(err.Error(), "must both be set or both be empty") {
+		t.Errorf("error should mention credential pair, got: %v", err)
+	}
+}
+
+func TestLoad_ACMEUnknownStorageType(t *testing.T) {
+	raw := `{
+		services: {
+			web: {
+				listen: ":443",
+				tls: true,
+				acme: {
+					email: "admin@example.com",
+					storage_type: "redis",
+				},
+				routes: [
+					{ match: { path: "/" }, action: "a" },
+				],
+			},
+		},
+		actions: {
+			a: { type: "proxy", upstream: "localhost:80" },
+		},
+	}`
+
+	_, err := Load([]byte(raw))
+	if err == nil {
+		t.Fatal("expected error for unknown storage type")
+	}
+	if !strings.Contains(err.Error(), "acme.storage_type \"redis\" is invalid") {
+		t.Errorf("error should mention invalid storage type, got: %v", err)
+	}
+}
+
+func TestLoad_ACMES3WithDefaultCredentialChain(t *testing.T) {
+	raw := `{
+		services: {
+			web: {
+				listen: ":443",
+				tls: true,
+				acme: {
+					email: "admin@example.com",
+					storage_type: "s3",
+					s3: {
+						bucket: "my-certs",
+						endpoint: "https://s3.example.com",
+					},
+				},
+				routes: [
+					{ match: { path: "/" }, action: "a" },
+				],
+			},
+		},
+		actions: {
+			a: { type: "proxy", upstream: "localhost:80" },
+		},
+	}`
+
+	// Should pass validation — no credentials means default AWS chain.
+	_, err := Load([]byte(raw))
+	if err != nil {
+		t.Fatalf("expected no error for S3 without explicit credentials, got: %v", err)
+	}
+}
+

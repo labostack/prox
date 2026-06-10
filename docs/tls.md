@@ -97,7 +97,16 @@ With this configuration, prox automatically:
 | `dns.provider` | *(required)* | DNS provider name: `"cloudflare"` |
 | `dns.token` | *(env var)* | API token. Falls back to provider env var if empty |
 | `dns.discover` | `false` | Fetch all zones from provider account and manage certificates automatically |
-| `storage` | `"acme/"` | Storage path for certificates and account data |
+| `storage_type` | `"file"` | Storage backend: `"file"` (local filesystem) or `"s3"` (S3-compatible) |
+| `storage` | `"acme/"` | Storage path for certificates and account data (file backend) |
+| `s3` | — | S3 storage config, required when `storage_type` is `"s3"` |
+| `s3.bucket` | *(required)* | S3 bucket name |
+| `s3.region` | `"us-east-1"` | AWS region |
+| `s3.endpoint` | — | Custom endpoint for S3-compatible providers (MinIO, R2, Spaces) |
+| `s3.access_key` | — | Static access key. Falls back to AWS credential chain if empty |
+| `s3.secret_key` | — | Static secret key. Must be set together with `access_key` |
+| `s3.prefix` | `"acme/"` | Key prefix within the bucket |
+| `s3.use_path_style` | `false` | Force path-style URLs (required for MinIO) |
 | `domains` | *(auto)* | Explicit domain list. If empty, auto-discovered from routes |
 
 ### Challenge Types
@@ -302,7 +311,11 @@ acme: {
 
 ### Certificate Storage
 
-ACME certificates, private keys, and account data are stored on disk. The default location is an `acme/` directory next to the configuration file.
+ACME certificates, private keys, and account data need a persistent storage backend. prox supports two storage backends: **file** (local filesystem, default) and **s3** (S3-compatible object storage).
+
+#### File Storage (default)
+
+The default backend stores data in a local directory. The default location is an `acme/` directory next to the configuration file.
 
 ```
 config.json5
@@ -328,6 +341,112 @@ Relative paths are resolved from the directory of the configuration file. Absolu
 
 !!! warning
     The storage directory contains private keys. Ensure appropriate file permissions (`700` for the directory, `600` for key files).
+
+#### S3 Storage
+
+For multi-server deployments, prox can store ACME data in any S3-compatible object storage — AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces, etc.
+
+Set `storage_type: "s3"` and provide the `s3` configuration block:
+
+```json5
+acme: {
+  email: "certs@example.com",
+  storage_type: "s3",
+  s3: {
+    bucket: "my-certificates",
+    prefix: "prox/acme/",
+  },
+}
+```
+
+prox uses advisory locking via S3 object metadata to coordinate certificate issuance across multiple instances, preventing duplicate requests and rate limit issues.
+
+##### AWS S3
+
+With IAM roles (EC2/ECS/EKS), no credentials are needed — prox uses the default AWS credential chain:
+
+```json5
+acme: {
+  email: "certs@example.com",
+  storage_type: "s3",
+  s3: {
+    bucket: "my-certs",
+    region: "eu-west-1",
+  },
+}
+```
+
+With static credentials:
+
+```json5
+acme: {
+  email: "certs@example.com",
+  storage_type: "s3",
+  s3: {
+    bucket: "my-certs",
+    region: "us-east-1",
+    access_key: "AKIAIOSFODNN7EXAMPLE",
+    secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  },
+}
+```
+
+!!! tip
+    Use IAM roles or environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) instead of hardcoding credentials in the config.
+
+##### MinIO
+
+MinIO requires path-style addressing and a custom endpoint:
+
+```json5
+acme: {
+  email: "certs@example.com",
+  storage_type: "s3",
+  s3: {
+    bucket: "certificates",
+    endpoint: "https://minio.internal:9000",
+    access_key: "minioadmin",
+    secret_key: "minioadmin",
+    use_path_style: true,
+  },
+}
+```
+
+##### Cloudflare R2
+
+R2 uses the S3-compatible API with an account-specific endpoint:
+
+```json5
+acme: {
+  email: "certs@example.com",
+  storage_type: "s3",
+  s3: {
+    bucket: "prox-certs",
+    endpoint: "https://<account-id>.r2.cloudflarestorage.com",
+    access_key: "...",
+    secret_key: "...",
+  },
+}
+```
+
+##### DigitalOcean Spaces
+
+```json5
+acme: {
+  email: "certs@example.com",
+  storage_type: "s3",
+  s3: {
+    bucket: "prox-certs",
+    region: "nyc3",
+    endpoint: "https://nyc3.digitaloceanspaces.com",
+    access_key: "...",
+    secret_key: "...",
+  },
+}
+```
+
+!!! warning
+    The S3 bucket contains private keys. Ensure the bucket is not publicly accessible and has appropriate IAM/access policies.
 
 ### OCSP Stapling
 
@@ -363,9 +482,29 @@ prox extracts `example.com` and `api.example.com` from the route configuration a
 
 When running prox on multiple servers with the same domains, each server would independently request certificates — which can exhaust rate limits and cause DNS-01 challenge conflicts.
 
-#### Shared Storage (recommended)
+#### S3 Storage (recommended)
 
-Mount a shared filesystem (NFS, EFS) as the ACME storage path across all servers. CertMagic uses file-based locking — only one server obtains the certificate, and the others use it from the shared storage:
+Use S3-compatible storage to share ACME data across all prox instances. prox uses advisory locking via S3 object metadata to ensure only one instance issues a certificate at a time:
+
+```json5
+acme: {
+  email: "certs@example.com",
+  challenge: "dns",
+  dns: { provider: "cloudflare" },
+  storage_type: "s3",
+  s3: {
+    bucket: "prox-certs",
+    region: "us-east-1",
+  },
+}
+```
+
+!!! tip
+    S3 storage is the recommended approach for multi-server deployments. No shared filesystem infrastructure is needed — any S3-compatible provider works.
+
+#### Shared Filesystem
+
+Alternatively, mount a shared filesystem (NFS, EFS) as the ACME storage path across all servers:
 
 ```json5
 acme: {
@@ -376,8 +515,7 @@ acme: {
 }
 ```
 
-!!! tip
-    This is the recommended approach for multi-server deployments. All renewal and OCSP stapling happens transparently with coordination via file locks.
+CertMagic uses file-based locking — only one server obtains the certificate, and the others use it from the shared storage.
 
 #### Hybrid Approach
 

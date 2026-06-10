@@ -445,11 +445,40 @@ func (v *validator) validateACME(name string, svc *Service) {
 		v.addIssue("service %q: acme.ca and acme.cas are mutually exclusive", name)
 	}
 
+	// Validate storage backend.
+	switch acme.StorageType {
+	case "", "file":
+		// Valid — file storage (default).
+	case "s3":
+		v.validateACMES3(name, acme.S3)
+	default:
+		v.addIssue("service %q: acme.storage_type %q is invalid (expected \"file\" or \"s3\")", name, acme.StorageType)
+	}
+
 	// Wildcard domains require DNS challenge.
 	for _, d := range acme.Domains {
 		if strings.Contains(d, "*") && acme.Challenge != "dns" {
 			v.addIssue("service %q: wildcard domain %q requires challenge \"dns\"", name, d)
 		}
+	}
+}
+
+// validateACMES3 checks S3 storage configuration.
+func (v *validator) validateACMES3(svcName string, s3 *ACMES3Config) {
+	if s3 == nil {
+		v.addIssue("service %q: acme.s3 is required when storage_type is \"s3\"", svcName)
+		return
+	}
+
+	if s3.Bucket == "" {
+		v.addIssue("service %q: acme.s3.bucket is required", svcName)
+	}
+
+	// Credentials must be provided as a pair.
+	hasKey := s3.AccessKey != ""
+	hasSecret := s3.SecretKey != ""
+	if hasKey != hasSecret {
+		v.addIssue("service %q: acme.s3.access_key and acme.s3.secret_key must both be set or both be empty", svcName)
 	}
 }
 

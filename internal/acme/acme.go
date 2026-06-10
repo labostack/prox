@@ -27,8 +27,10 @@ type Manager struct {
 // configDir is the directory containing the config file, used to resolve
 // relative storage paths.
 func New(cfg *config.ACMEConfig, configDir string) (*Manager, error) {
-	storagePath := resolveStoragePath(cfg.Storage, configDir)
-	storage := &certmagic.FileStorage{Path: storagePath}
+	storage, err := buildStorage(cfg, configDir)
+	if err != nil {
+		return nil, fmt.Errorf("building ACME storage: %w", err)
+	}
 
 	mgr := &Manager{}
 
@@ -54,8 +56,12 @@ func New(cfg *config.ACMEConfig, configDir string) (*Manager, error) {
 	mgr.cache = cache
 	mgr.domains = cfg.Domains
 
+	storageType := cfg.StorageType
+	if storageType == "" {
+		storageType = "file"
+	}
 	slog.Debug("acme manager created",
-		"storage", storagePath,
+		"storage_type", storageType,
 		"issuers", len(issuers),
 	)
 

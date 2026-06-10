@@ -131,9 +131,17 @@ type ACMEConfig struct {
 	// Required when challenge is "dns".
 	DNS *ACMEDNSConfig `json:"dns,omitempty"`
 
-	// Storage path for certificates and ACME account data.
+	// StorageType selects the storage backend for certificates and ACME
+	// account data: "file" (default) or "s3".
+	StorageType string `json:"storage_type,omitempty"`
+
+	// Storage path for certificates and ACME account data (file backend).
 	// Default: "acme/" directory next to the config file.
 	Storage string `json:"storage,omitempty"`
+
+	// S3 configures S3-compatible object storage for ACME data.
+	// Required when storage_type is "s3".
+	S3 *ACMES3Config `json:"s3,omitempty"`
 
 	// Domains to manage. If empty, domains are auto-discovered
 	// from route match.domain patterns in this service.
@@ -154,6 +162,32 @@ type ACMEDNSConfig struct {
 	// certificates for each zone (zone + *.zone). When enabled, acme.domains
 	// and route auto-discovery are ignored.
 	Discover bool `json:"discover,omitempty"`
+}
+
+// ACMES3Config configures S3-compatible object storage for ACME certificate data.
+type ACMES3Config struct {
+	// Bucket is the S3 bucket name (required).
+	Bucket string `json:"bucket"`
+
+	// Region is the AWS region. Default: "us-east-1".
+	Region string `json:"region,omitempty"`
+
+	// Endpoint is a custom S3-compatible endpoint URL (e.g., MinIO, Cloudflare R2).
+	// When empty, the default AWS S3 endpoint is used.
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// AccessKey and SecretKey are static credentials.
+	// When empty, the default AWS credential chain is used
+	// (environment variables, shared config, IAM role, IMDS).
+	AccessKey string `json:"access_key,omitempty"`
+	SecretKey string `json:"secret_key,omitempty"`
+
+	// Prefix is the key prefix within the bucket. Default: "acme/".
+	Prefix string `json:"prefix,omitempty"`
+
+	// UsePathStyle forces path-style addressing (required for MinIO and
+	// some S3-compatible providers that don't support virtual-hosted buckets).
+	UsePathStyle bool `json:"use_path_style,omitempty"`
 }
 
 // Route binds a request matcher to an action — either by name or inline.
