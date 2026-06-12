@@ -136,3 +136,47 @@ func TestBuildDNSSolver_UnknownProvider(t *testing.T) {
 		t.Fatal("expected error for unknown provider")
 	}
 }
+
+func TestBuildDNSSolver_Resolvers(t *testing.T) {
+	cfg := &config.ACMEDNSConfig{
+		Provider:  "cloudflare",
+		Token:     "my-api-token",
+		Resolvers: []string{"1.1.1.1:53", "8.8.8.8:53"},
+	}
+
+	solver, err := buildDNSSolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if solver == nil {
+		t.Fatal("expected non-nil solver")
+	}
+
+	// Verify resolvers are passed through to the DNSManager.
+	if len(solver.DNSManager.Resolvers) != 2 {
+		t.Fatalf("expected 2 resolvers, got %d", len(solver.DNSManager.Resolvers))
+	}
+	if solver.DNSManager.Resolvers[0] != "1.1.1.1:53" {
+		t.Errorf("Resolvers[0] = %q, want %q", solver.DNSManager.Resolvers[0], "1.1.1.1:53")
+	}
+	if solver.DNSManager.Resolvers[1] != "8.8.8.8:53" {
+		t.Errorf("Resolvers[1] = %q, want %q", solver.DNSManager.Resolvers[1], "8.8.8.8:53")
+	}
+}
+
+func TestBuildDNSSolver_NoResolvers(t *testing.T) {
+	cfg := &config.ACMEDNSConfig{
+		Provider: "cloudflare",
+		Token:    "my-api-token",
+	}
+
+	solver, err := buildDNSSolver(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// When no resolvers are configured, the field should be nil (certmagic uses defaults).
+	if solver.DNSManager.Resolvers != nil {
+		t.Errorf("expected nil resolvers, got %v", solver.DNSManager.Resolvers)
+	}
+}

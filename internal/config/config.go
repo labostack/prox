@@ -162,6 +162,13 @@ type ACMEDNSConfig struct {
 	// certificates for each zone (zone + *.zone). When enabled, acme.domains
 	// and route auto-discovery are ignored.
 	Discover bool `json:"discover,omitempty"`
+
+	// Resolvers overrides the default DNS resolvers used for ACME zone
+	// detection and challenge propagation checks. This is useful in
+	// containerized environments (e.g., Docker) where the default
+	// resolver cannot properly return SOA records for certain TLDs.
+	// Format: ["1.1.1.1:53", "8.8.8.8:53"]
+	Resolvers []string `json:"resolvers,omitempty"`
 }
 
 // ACMES3Config configures S3-compatible object storage for ACME certificate data.

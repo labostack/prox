@@ -42,6 +42,7 @@ func buildDNSSolver(cfg *config.ACMEDNSConfig) (*certmagic.DNS01Solver, error) {
 	return &certmagic.DNS01Solver{
 		DNSManager: certmagic.DNSManager{
 			DNSProvider: provider,
+			Resolvers:   cfg.Resolvers,
 		},
 	}, nil
 }
