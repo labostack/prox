@@ -175,8 +175,14 @@ func TestBuildDNSSolver_NoResolvers(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// When no resolvers are configured, the field should be nil (certmagic uses defaults).
-	if solver.DNSManager.Resolvers != nil {
-		t.Errorf("expected nil resolvers, got %v", solver.DNSManager.Resolvers)
+	// When no resolvers are configured, default public DNS resolvers are used.
+	if len(solver.DNSManager.Resolvers) != 2 {
+		t.Fatalf("expected 2 default resolvers, got %d: %v", len(solver.DNSManager.Resolvers), solver.DNSManager.Resolvers)
+	}
+	if solver.DNSManager.Resolvers[0] != "1.1.1.1:53" {
+		t.Errorf("Resolvers[0] = %q, want %q", solver.DNSManager.Resolvers[0], "1.1.1.1:53")
+	}
+	if solver.DNSManager.Resolvers[1] != "8.8.8.8:53" {
+		t.Errorf("Resolvers[1] = %q, want %q", solver.DNSManager.Resolvers[1], "8.8.8.8:53")
 	}
 }

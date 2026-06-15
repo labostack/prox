@@ -39,10 +39,19 @@ func buildDNSSolver(cfg *config.ACMEDNSConfig) (*certmagic.DNS01Solver, error) {
 		return nil, err
 	}
 
+	// Use configured resolvers, or fall back to well-known public DNS
+	// servers. Container environments (Docker, Kubernetes) often have
+	// local resolvers that lag behind or fail to propagate provider
+	// TXT records, causing DNS-01 challenge verification timeouts.
+	resolvers := cfg.Resolvers
+	if len(resolvers) == 0 {
+		resolvers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+	}
+
 	return &certmagic.DNS01Solver{
 		DNSManager: certmagic.DNSManager{
 			DNSProvider: provider,
-			Resolvers:   cfg.Resolvers,
+			Resolvers:   resolvers,
 		},
 	}, nil
 }
