@@ -22,14 +22,14 @@ const (
 
 // Route is a pre-compiled L4 route for domain-based dispatching.
 type Route struct {
-	RouteID        string   // e.g. "gateway:0" — matches plugin binding key
-	Domain         string   // original pattern (e.g. "*.cdn.example.com")
-	DomainSegments []string // split + lowered segments for glob matching
-	DomainGlob     bool     // true when pattern ends with "**"
-	IsPass         bool     // true for action type "pass"
-	IsDrop         bool     // true for action type "drop"
-	Upstream       string   // dial address for pass routes (static)
-	UpstreamTpl    string   // upstream template with {target} for balanced pass routes
+	RouteID        string            // e.g. "gateway:0" — matches plugin binding key
+	Domain         string            // original pattern (e.g. "*.cdn.example.com")
+	DomainSegments []string          // split + lowered segments for glob matching
+	DomainGlob     bool              // true when pattern ends with "**"
+	IsPass         bool              // true for action type "pass"
+	IsDrop         bool              // true for action type "drop"
+	Upstream       string            // dial address for pass routes (static)
+	UpstreamTpl    string            // upstream template with {target} for balanced pass routes
 	Bal            balancer.Balancer // nil = no balancing
 }
 
@@ -39,10 +39,10 @@ type Route struct {
 // net.Listener.
 type Dispatcher struct {
 	routes  atomic.Pointer[[]*Route]
-	wg      sync.WaitGroup // tracks active pass relays
+	wg      sync.WaitGroup  // tracks active pass relays
 	plugins *plugin.Manager // optional, for on_connect hooks
 
-	mu    sync.Mutex     // protects conns
+	mu    sync.Mutex            // protects conns
 	conns map[net.Conn]struct{} // active relay connections
 }
 
@@ -194,7 +194,18 @@ func (d *Dispatcher) handleConn(conn net.Conn, httpLn *chanListener) {
 			upstream := route.Upstream
 			var target string
 			if route.Bal != nil && route.UpstreamTpl != "" {
-				target = route.Bal.Next()
+				// For keyed balancers (grouped targets), extract
+				// the first wildcard capture from the SNI match
+				if kb, ok := route.Bal.(balancer.KeyedBalancer); ok {
+					captures, _ := matchDomainCaptures(route.DomainSegments, route.DomainGlob, sniLower)
+					var key string
+					if len(captures) > 0 {
+						key = captures[0]
+					}
+					target = kb.NextKeyed(key)
+				} else {
+					target = route.Bal.Next()
+				}
 				upstream = strings.ReplaceAll(route.UpstreamTpl, "{target}", target)
 			}
 
