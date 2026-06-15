@@ -47,10 +47,41 @@ type S3Storage struct {
 	mu        sync.Mutex
 	heldLocks map[string]bool
 
-	// lockMu serializes lock acquisition attempts within the same process
-	// to avoid concurrent PutObject calls to the same lock key (prevents
-	// 429 rate limits on providers like Cloudflare R2).
-	lockMu sync.Mutex
+	// keyMu provides per-key serialization of lock acquisition attempts
+	// within the same process. Each key gets its own mutex so that one
+	// domain's slow lock acquisition doesn't block other domains.
+	keyMu keyMutexMap
+}
+
+// keyMutexMap provides per-key mutexes for serializing lock operations.
+type keyMutexMap struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// lock acquires the mutex for the given key, creating it if needed.
+func (m *keyMutexMap) lock(key string) {
+	m.mu.Lock()
+	if m.locks == nil {
+		m.locks = make(map[string]*sync.Mutex)
+	}
+	km, ok := m.locks[key]
+	if !ok {
+		km = &sync.Mutex{}
+		m.locks[key] = km
+	}
+	m.mu.Unlock()
+	km.Lock()
+}
+
+// unlock releases the mutex for the given key.
+func (m *keyMutexMap) unlock(key string) {
+	m.mu.Lock()
+	km, ok := m.locks[key]
+	m.mu.Unlock()
+	if ok {
+		km.Unlock()
+	}
 }
 
 // Interface guards.
@@ -273,14 +304,15 @@ func (s *S3Storage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, er
 
 // Lock acquires an advisory lock on a key using S3 objects.
 // It polls until the lock is acquired or the context is cancelled.
-// Lock acquisition is serialized within the same process to avoid
-// concurrent PutObject calls to the same key (prevents 429 rate limits).
+// Lock acquisition is serialized per-key within the same process to avoid
+// concurrent PutObject calls to the same key (prevents 429 rate limits)
+// while allowing independent domains to lock in parallel.
 func (s *S3Storage) Lock(ctx context.Context, key string) error {
-	// Serialize lock attempts within this process to prevent thundering
-	// herd on S3 — multiple goroutines hitting PutObject for the same
-	// lock key simultaneously causes rate limiting on some providers.
-	s.lockMu.Lock()
-	defer s.lockMu.Unlock()
+	// Serialize lock attempts per key to prevent thundering herd on S3 —
+	// multiple goroutines hitting PutObject for the same lock key
+	// simultaneously causes rate limiting on some providers.
+	s.keyMu.lock(key)
+	defer s.keyMu.unlock(key)
 
 	lk := s.lockKey(key)
 	start := time.Now()
