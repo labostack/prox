@@ -96,6 +96,33 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 				}
 			}
 		}
+
+		// For pass routes with {target}, ensure the dispatcher uses the same
+		// balancer. If no targets are configured yet (plugin will push them
+		// later), create an empty balancer so the dispatcher has a reference
+		// to swap targets into.
+		for i, route := range svc.Routes {
+			if route.Balancer == nil {
+				continue
+			}
+			routeID := fmt.Sprintf("%s:%d", name, i)
+			if _, ok := routeBalancers[routeID]; ok {
+				continue
+			}
+			// Route has a balancer config but no targets and no plugin wrapping.
+			// Create an empty balancer so the dispatcher can reference it.
+			act := resolveAction(route, cfg)
+			if act != nil && act.Type == config.ActionTypePass && strings.Contains(act.Upstream, "{target}") {
+				empty := buildDispatcherBalancer(route.Balancer)
+				if empty == nil {
+					// No static targets — create an empty one by type.
+					empty = bal.NewByType(string(route.Balancer.Type), nil)
+				}
+				if empty != nil {
+					routeBalancers[routeID] = empty
+				}
+			}
+		}
 	}
 
 	// Build plugin manager before servers so handlers can reference it.
@@ -116,7 +143,7 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 			return nil, fmt.Errorf("building actions for service %q: %w", name, err)
 		}
 
-		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins, configDir)
+		srv, handler, err := buildServer(name, svc, cfg, svcRegistry, rt, g.plugins, configDir, routeBalancers)
 		if err != nil {
 			return nil, fmt.Errorf("building service %q: %w", name, err)
 		}
@@ -160,14 +187,8 @@ func (g *Group) Reload(cfg *config.Config) error {
 
 		handler.Swap(rt, svcRegistry)
 
-		// Atomically swap dispatcher routes if this server has one.
-		for _, ms := range g.servers {
-			if ms.name == name && ms.dispatch != nil {
-				routes := buildDispatcherRoutes(name, svc, cfg)
-				ms.dispatch.SwapRoutes(routes)
-				slog.Debug("dispatcher routes reloaded", "service", name, "routes", len(routes))
-			}
-		}
+		// Dispatcher routes are swapped below, after balancer wrapping,
+		// so pass routes get the correct (plugin-managed) balancer reference.
 
 		// Wrap balancers in Grouped for plugin-managed or autostart-targeted routes.
 		for i, route := range svc.Routes {
@@ -184,6 +205,15 @@ func (g *Group) Reload(cfg *config.Config) error {
 				if b := rt.RouteBalancer(i); b != nil {
 					routeBalancers[routeID] = b
 				}
+			}
+		}
+
+		// Swap dispatcher routes now that routeBalancers has the correct entries.
+		for _, ms := range g.servers {
+			if ms.name == name && ms.dispatch != nil {
+				routes := buildDispatcherRoutes(name, svc, cfg, routeBalancers)
+				ms.dispatch.SwapRoutes(routes)
+				slog.Debug("dispatcher routes reloaded", "service", name, "routes", len(routes))
 			}
 		}
 
@@ -394,7 +424,7 @@ func (g *Group) BalancerInfo() []BalancerStatus {
 	return result
 }
 
-func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager, configDir string) (*managedServer, *swappableHandler, error) {
+func buildServer(name string, svc *config.Service, cfg *config.Config, registry *action.Registry, rt *router.Router, plugins *plugin.Manager, configDir string, routeBalancers map[string]bal.Balancer) (*managedServer, *swappableHandler, error) {
 	handler := newSwappableHandler(name, rt, registry, plugins)
 
 	// Resolve per-service timeouts, falling back to defaults.
@@ -480,7 +510,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 	}
 
 	// Check if this service has any "pass" routes — if so, build a dispatcher.
-	dispatchRoutes := buildDispatcherRoutes(name, svc, cfg)
+	dispatchRoutes := buildDispatcherRoutes(name, svc, cfg, routeBalancers)
 	if len(dispatchRoutes) > 0 {
 		ms.dispatch = dispatcher.New(dispatchRoutes, plugins)
 
@@ -508,7 +538,7 @@ func buildServer(name string, svc *config.Service, cfg *config.Config, registry 
 // Returns nil if the service has no "pass" routes (no dispatcher needed).
 // When the dispatcher is active, "drop" routes with domain patterns also
 // participate in L4 matching as a bonus.
-func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.Config) []*dispatcher.Route {
+func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.Config, routeBalancers map[string]bal.Balancer) []*dispatcher.Route {
 	hasPass := false
 	for _, route := range svc.Routes {
 		if resolveActionType(route, cfg) == config.ActionTypePass {
@@ -527,8 +557,10 @@ func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.
 			continue // L4 dispatcher can only match on domain (SNI)
 		}
 
+		routeID := fmt.Sprintf("%s:%d", serviceName, i)
+
 		dr := &dispatcher.Route{
-			RouteID:        fmt.Sprintf("%s:%d", serviceName, i),
+			RouteID:        routeID,
 			Domain:         route.Match.Domain,
 			DomainSegments: strings.Split(strings.ToLower(route.Match.Domain), "."),
 		}
@@ -545,7 +577,14 @@ func buildDispatcherRoutes(serviceName string, svc *config.Service, cfg *config.
 				dr.IsPass = true
 				if route.Balancer != nil && strings.Contains(act.Upstream, "{target}") {
 					dr.UpstreamTpl = act.Upstream
-					dr.Bal = buildDispatcherBalancer(route.Balancer)
+					// Use the shared balancer from routeBalancers so plugin
+					// set_targets updates are visible to the L4 dispatcher.
+					if b, ok := routeBalancers[routeID]; ok {
+						dr.Bal = b
+					} else {
+						// Fallback: build from static targets in config.
+						dr.Bal = buildDispatcherBalancer(route.Balancer)
+					}
 				} else {
 					dr.Upstream = act.Upstream
 				}

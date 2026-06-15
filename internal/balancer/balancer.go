@@ -292,6 +292,12 @@ func (g *Grouped) SwapGroupedTargets(groups map[string][]string) {
 	g.groups.Store(&groupedMap{m: newMap, targetGroup: tg})
 }
 
+// NewByType creates a flat balancer of the given type.
+// Valid types: "random", "leastconn", "roundrobin" (default).
+func NewByType(strategy string, targets []string) Balancer {
+	return newByStrategy(strategy, targets)
+}
+
 // newByStrategy creates a flat balancer of the given type.
 func newByStrategy(strategy string, targets []string) Balancer {
 	switch strategy {
