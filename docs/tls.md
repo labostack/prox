@@ -97,7 +97,7 @@ With this configuration, prox automatically:
 | `dns.provider` | *(required)* | DNS provider name: `"cloudflare"` |
 | `dns.token` | *(env var)* | API token. Falls back to provider env var if empty |
 | `dns.discover` | `false` | Fetch all zones from provider account and manage certificates automatically |
-| `dns.resolvers` | *(system)* | Custom DNS resolvers for zone detection and propagation checks (e.g., `["1.1.1.1:53", "8.8.8.8:53"]`) |
+| `dns.resolvers` | `["1.1.1.1:53", "8.8.8.8:53"]` | DNS resolvers for zone detection and propagation checks. Override to use custom nameservers |
 | `storage_type` | `"file"` | Storage backend: `"file"` (local filesystem) or `"s3"` (S3-compatible) |
 | `storage` | `"acme/"` | Storage path for certificates and account data (file backend) |
 | `s3` | — | S3 storage config, required when `storage_type` is `"s3"` |
@@ -538,7 +538,7 @@ Let's Encrypt enforces rate limits on certificate issuance. If you hit a limit, 
 
 **DNS zone detection failures**
 
-In containerized environments (Docker, Kubernetes), ACME zone detection may fail with errors like `expected 1 zone, got 0`. This happens when the container's DNS resolver cannot properly return SOA records, causing certmagic to misidentify the DNS zone (e.g., detecting `xyz.` instead of `example.xyz`). Fix this by setting custom resolvers:
+In containerized environments (Docker, Kubernetes), ACME zone detection may fail with errors like `expected 1 zone, got 0`. This happens when the container's DNS resolver cannot properly return SOA records, causing certmagic to misidentify the DNS zone (e.g., detecting `xyz.` instead of `example.xyz`). prox defaults to using public DNS resolvers (`1.1.1.1` and `8.8.8.8`) to avoid this, but you can override them if needed:
 
 ```json5
 dns: {
@@ -549,7 +549,7 @@ dns: {
 
 **DNS propagation**
 
-DNS-01 challenges require TXT records to propagate before the CA can verify them. If challenges fail with timeout errors, the DNS provider may have slow propagation. Check your provider's TTL settings.
+DNS-01 challenges require TXT records to propagate before the CA can verify them. If challenges fail with timeout errors, the DNS provider may have slow propagation. prox uses public DNS resolvers by default for propagation checks, which typically see Cloudflare records within seconds. If you still experience timeouts, check your provider's TTL settings.
 
 **Firewall rules**
 
