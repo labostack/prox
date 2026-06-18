@@ -48,6 +48,9 @@ type CountingReader struct {
 
 // Read implements io.Reader with byte counting.
 func (cr *CountingReader) Read(p []byte) (int, error) {
+	if cr.rc == nil {
+		return 0, io.EOF
+	}
 	nr, err := cr.rc.Read(p)
 	cr.N += int64(nr)
 	return nr, err
@@ -55,6 +58,9 @@ func (cr *CountingReader) Read(p []byte) (int, error) {
 
 // Close implements io.Closer.
 func (cr *CountingReader) Close() error {
+	if cr.rc == nil {
+		return nil
+	}
 	return cr.rc.Close()
 }
 
