@@ -92,8 +92,16 @@ func (v *validator) validateRoute(svcName string, idx int, route *Route) {
 
 	// Nil match is allowed — it acts as a catch-all route.
 	if route.Match != nil {
-		if route.Match.Path == "" && route.Match.Domain == "" {
+		if route.Match.Path == "" && route.Match.Domain == "" && !route.Match.ForwardProxy {
 			v.addIssue("%s: match.path or match.domain is required (or omit match entirely for catch-all)", prefix)
+		}
+
+		// Forward proxy routes match by request type, not path/domain — warn if both are set.
+		if route.Match.ForwardProxy && (route.Match.Path != "" || route.Match.Domain != "") {
+			slog.Warn("forward_proxy route has path/domain matchers which are ignored for forward proxy requests",
+				"service", svcName,
+				"route", idx,
+			)
 		}
 
 		v.validatePath(prefix, route.Match.Path)

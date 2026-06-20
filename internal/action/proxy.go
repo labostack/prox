@@ -1,6 +1,7 @@
 package action
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -174,6 +175,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.serveDynamic(w, r)
 		return
 	}
+	// Forward proxy: relay to target from the absolute URL via upstream.
+	if r.URL.Scheme != "" && r.URL.Host != "" {
+		serveForwardProxy(w, r, p.target, p.headers, p.timeout)
+		return
+	}
 	if isWebSocketUpgrade(r) {
 		serveWebSocket(w, r, p.target, p.headers, p.timeout)
 		return
@@ -243,6 +249,11 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 		"upstream", resolved,
 	)
 
+	// Forward proxy: relay to target from the absolute URL via upstream.
+	if r.URL.Scheme != "" && r.URL.Host != "" {
+		serveForwardProxy(w, r, target, p.headers, p.timeout)
+		return
+	}
 	if isWebSocketUpgrade(r) {
 		serveWebSocket(w, r, target, p.headers, p.timeout)
 		return
@@ -259,6 +270,123 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	// Pass resolved target via context to the shared ReverseProxy.
 	ctx := context.WithValue(r.Context(), dynTargetKey{}, target)
 	p.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// serveForwardProxy relays a forward proxy request (absolute URL in request line)
+// to an upstream proxy. The request is sent with the original absolute URL
+// preserved so the upstream proxy knows the actual target.
+//
+// Flow: browser → prox (this handler) → upstream proxy → target site.
+func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, headers map[string]string, timeout time.Duration) {
+	host := target.Host
+	if !strings.Contains(host, ":") {
+		switch target.Scheme {
+		case "https", "wss":
+			host += ":443"
+		default:
+			host += ":80"
+		}
+	}
+
+	upstream, err := dialUpstream(target.Scheme, host, target.Hostname(), timeout)
+	if err != nil {
+		slog.Warn("forward proxy dial failed",
+			"upstream", host,
+			"err", err,
+		)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer upstream.Close()
+
+	// Clone the request and set RequestURI to the full absolute URL
+	// so the upstream proxy receives a proper forward proxy request line
+	// (e.g. "GET http://example.com/path HTTP/1.1").
+	outReq := r.Clone(r.Context())
+	outReq.RequestURI = r.URL.String()
+
+	// Apply configured headers.
+	for k, v := range headers {
+		if http.CanonicalHeaderKey(k) == "Host" {
+			outReq.Host = v
+		} else {
+			outReq.Header.Set(k, v)
+		}
+	}
+
+	// X-Forwarded headers.
+	if clientIP, _, splitErr := net.SplitHostPort(r.RemoteAddr); splitErr == nil {
+		outReq.Header.Set("X-Forwarded-For", clientIP)
+	}
+	outReq.Header.Set("X-Forwarded-Proto", schemeOf(r))
+
+	// Remove hop-by-hop headers.
+	outReq.Header.Del("Te")
+	outReq.Header.Del("Trailers")
+
+	// Write the request to the upstream proxy.
+	if err := outReq.Write(upstream); err != nil {
+		slog.Warn("forward proxy write failed",
+			"upstream", host,
+			"err", err,
+		)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Read the upstream response.
+	br := bufioReaderPool.Get().(*bufio.Reader)
+	br.Reset(upstream)
+	defer bufioReaderPool.Put(br)
+
+	resp, err := http.ReadResponse(br, outReq)
+	if err != nil {
+		slog.Warn("forward proxy response failed",
+			"upstream", host,
+			"target", r.URL.Host,
+			"path", r.URL.Path,
+			"err", err,
+		)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy response headers.
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	// Stream the response body with immediate flushing.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	bufp := copyBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer copyBufPool.Put(bufp)
+	var totalTx int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			totalTx += int64(n)
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				break
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	if cs := ConnStatsFromContext(r.Context()); cs != nil {
+		cs.AddTx(totalTx)
+	}
 }
 
 // parseUpstream normalizes the upstream address into a URL.

@@ -89,6 +89,9 @@ type compiledRoute struct {
 	domainSegments []string // nil = match all hosts
 	domainGlob     bool     // true when pattern ends with "**"
 
+	// Forward proxy matching — only matches requests with absolute URL.
+	forwardProxy bool
+
 	// Load balancing.
 	bal balancer.Balancer // nil = no balancing
 
@@ -120,6 +123,7 @@ func New(routes []*config.Route) *Router {
 
 		// Nil match = catch-all route (matches everything).
 		if r.Match != nil {
+			cr.forwardProxy = r.Match.ForwardProxy
 			cr.domain = r.Match.Domain
 
 			// Pre-compute path entries — split comma-separated patterns.
@@ -191,7 +195,7 @@ func New(routes []*config.Route) *Router {
 
 	if len(compiled) == 1 {
 		cr := compiled[0]
-		if len(cr.paths) == 0 && cr.domainSegments == nil && cr.methods == nil {
+		if len(cr.paths) == 0 && cr.domainSegments == nil && cr.methods == nil && !cr.forwardProxy {
 			rt.isCatchAllOnly = true
 			rt.catchAllAction = cr.action
 		}
@@ -249,6 +253,9 @@ func (rt *Router) MatchAction(r *http.Request) string {
 	}
 
 	for _, route := range rt.routes {
+		if !route.matchForwardProxy(r) {
+			continue
+		}
 		ok, _, _ := route.matchDomain(hostSegments)
 		if !ok {
 			continue
@@ -301,6 +308,9 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 	}
 
 	for i, route := range rt.routes {
+		if !route.matchForwardProxy(r) {
+			continue
+		}
 		ok, captures, globTail := route.matchDomain(hostSegments)
 		if !ok {
 			continue
@@ -386,6 +396,24 @@ func (cr *compiledRoute) matchMethod(method string) bool {
 		return true
 	}
 	return cr.methods[method]
+}
+
+// isForwardProxyRequest reports whether the HTTP request is a forward proxy
+// request. Go's net/http parses forward proxy requests ("GET http://host/path")
+// into r.URL with Scheme and Host populated.
+func isForwardProxyRequest(r *http.Request) bool {
+	return r.URL.Scheme != "" && r.URL.Host != ""
+}
+
+// matchForwardProxy checks if the request matches this route's forward proxy setting.
+// When forwardProxy is true, only forward proxy requests (absolute URL) match.
+// When forwardProxy is false, forward proxy requests are rejected — they must
+// be routed to a dedicated forward_proxy route or return 404.
+func (cr *compiledRoute) matchForwardProxy(r *http.Request) bool {
+	if cr.forwardProxy {
+		return isForwardProxyRequest(r)
+	}
+	return !isForwardProxyRequest(r)
 }
 
 // matchDomain checks if the request host matches this route's domain pattern.

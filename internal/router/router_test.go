@@ -732,3 +732,158 @@ func TestRouter_PartialWildcardInfix(t *testing.T) {
 		}
 	}
 }
+
+// ── Forward proxy tests ────────────────────────────────────────────────
+
+func TestRouter_ForwardProxyMatch(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{ForwardProxy: true},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	// Forward proxy request (absolute URL) should match.
+	r, _ := http.NewRequest("GET", "http://example.com/path", nil)
+	r.Host = "example.com"
+	_, got := rt.Match(r)
+	if got != "forward" {
+		t.Errorf("forward proxy GET: expected %q, got %q", "forward", got)
+	}
+
+	// POST with absolute URL should also match.
+	r, _ = http.NewRequest("POST", "http://example.com/submit", nil)
+	r.Host = "example.com"
+	_, got = rt.Match(r)
+	if got != "forward" {
+		t.Errorf("forward proxy POST: expected %q, got %q", "forward", got)
+	}
+}
+
+func TestRouter_ForwardProxyRejectsRegularRequests(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{ForwardProxy: true},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	// Regular reverse proxy request (relative URL) should NOT match.
+	r, _ := http.NewRequest("GET", "/path", nil)
+	r.Host = "myproxy.example.com"
+	_, got := rt.Match(r)
+	if got != "" {
+		t.Errorf("regular request should not match forward_proxy route, got %q", got)
+	}
+}
+
+func TestRouter_RegularRouteRejectsForwardProxy(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.example.com", Path: "/*"},
+			Action: config.ActionRef{Name: "reverse"},
+		},
+	})
+
+	// Forward proxy request should NOT match a regular route, even if
+	// the target domain happens to match the pattern.
+	r, _ := http.NewRequest("GET", "http://sub.example.com/page", nil)
+	r.Host = "sub.example.com"
+	_, got := rt.Match(r)
+	if got != "" {
+		t.Errorf("forward proxy request should not match regular route, got %q", got)
+	}
+
+	// But a regular reverse proxy request should match.
+	r, _ = http.NewRequest("GET", "/page", nil)
+	r.Host = "sub.example.com"
+	_, got = rt.Match(r)
+	if got != "reverse" {
+		t.Errorf("regular request: expected %q, got %q", "reverse", got)
+	}
+}
+
+func TestRouter_ForwardProxyWithMethods(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{ForwardProxy: true, Methods: []string{"GET", "POST"}},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	tests := []struct {
+		method string
+		url    string
+		want   string
+	}{
+		{"GET", "http://example.com/", "forward"},
+		{"POST", "http://example.com/submit", "forward"},
+		{"DELETE", "http://example.com/resource", ""},
+		{"GET", "/local/path", ""},
+	}
+
+	for _, tc := range tests {
+		r, _ := http.NewRequest(tc.method, tc.url, nil)
+		r.Host = "proxy.local"
+		_, got := rt.Match(r)
+		if got != tc.want {
+			t.Errorf("%s %s: expected %q, got %q", tc.method, tc.url, tc.want, got)
+		}
+	}
+}
+
+func TestRouter_ForwardProxyMatchAction(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.**", Path: "/api/*"},
+			Action: config.ActionRef{Name: "api"},
+		},
+		{
+			Match:  &config.Match{ForwardProxy: true},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	// Forward proxy request should skip the first route and match forward.
+	r, _ := http.NewRequest("GET", "http://external.com/page", nil)
+	r.Host = "external.com"
+	got := rt.MatchAction(r)
+	if got != "forward" {
+		t.Errorf("MatchAction: expected %q, got %q", "forward", got)
+	}
+
+	// Regular request should match the api route.
+	r, _ = http.NewRequest("GET", "/api/users", nil)
+	r.Host = "sub.example.com"
+	got = rt.MatchAction(r)
+	if got != "api" {
+		t.Errorf("MatchAction regular: expected %q, got %q", "api", got)
+	}
+}
+
+func TestRouter_ForwardProxyCatchAllOptimizationDisabled(t *testing.T) {
+	// A single forward_proxy route should NOT use the isCatchAllOnly
+	// optimization, since it only matches forward proxy requests.
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{ForwardProxy: true},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	// Regular request must NOT match (would match if catch-all optimization fired).
+	r, _ := http.NewRequest("GET", "/anything", nil)
+	r.Host = "any.host.com"
+	_, got := rt.Match(r)
+	if got != "" {
+		t.Errorf("catch-all optimization should be disabled for forward_proxy, got %q", got)
+	}
+
+	// Forward proxy request should still match.
+	r, _ = http.NewRequest("GET", "http://target.com/path", nil)
+	r.Host = "target.com"
+	_, got = rt.Match(r)
+	if got != "forward" {
+		t.Errorf("forward proxy: expected %q, got %q", "forward", got)
+	}
+}

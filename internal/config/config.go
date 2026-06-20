@@ -217,12 +217,14 @@ type Route struct {
 // Path supports exact matches ("/styles.css") and wildcard prefixes ("/api/*").
 // Domain supports exact matches ("example.com") and wildcard prefixes ("*.example.com").
 // Methods is optional — an empty list matches all HTTP methods.
-// At least one of Path or Domain must be specified.
+// ForwardProxy matches only forward proxy requests (absolute URL in request line).
+// At least one of Path, Domain, or ForwardProxy must be specified.
 // A nil Match acts as a catch-all route that matches everything.
 type Match struct {
-	Path    string   `json:"path,omitempty"`
-	Domain  string   `json:"domain,omitempty"`
-	Methods []string `json:"methods,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	Domain       string   `json:"domain,omitempty"`
+	Methods      []string `json:"methods,omitempty"`
+	ForwardProxy bool     `json:"forward_proxy,omitempty"`
 }
 
 // BalancerType represents the load balancing strategy.
