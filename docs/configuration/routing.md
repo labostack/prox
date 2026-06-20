@@ -69,9 +69,12 @@ Domain patterns are also used for [L4 dispatching](../deployment.md#l4-dispatchi
 
 ## Forward Proxy
 
-The `forward_proxy` matcher selects routes that handle **forward proxy requests** — HTTP requests with an absolute URL in the request line (e.g. `GET http://example.com/path`).
+The `forward_proxy` matcher selects routes that handle **forward proxy requests**. Two detection modes are supported:
 
-When a browser extension or system proxy setting sends traffic through prox, HTTPS sites use `CONNECT` tunneling while plain HTTP sites send standard requests with absolute URLs. The `forward_proxy: true` matcher catches the latter case.
+1. **HTTP/1.1** — absolute URL in request line (e.g. `GET http://example.com/path HTTP/1.1`).
+2. **HTTP/2 over TLS** — the `:authority` pseudo-header differs from the TLS SNI hostname. This happens when a client connects to the proxy via HTTPS/H2 and requests a different target.
+
+When a client sends traffic through prox, HTTPS sites use `CONNECT` tunneling while plain HTTP sites send forward proxy requests. The `forward_proxy: true` matcher catches the latter case for both HTTP/1.1 and HTTP/2.
 
 ```json5
 {
@@ -82,8 +85,9 @@ When a browser extension or system proxy setting sends traffic through prox, HTT
 
 **Key behavior:**
 
-- `forward_proxy: true` — matches only forward proxy requests (absolute URL). Regular reverse proxy requests are ignored.
+- `forward_proxy: true` — matches only forward proxy requests. Regular reverse proxy requests are ignored.
 - Without `forward_proxy` (default) — forward proxy requests are **rejected** by the route. This prevents accidental matching of `GET http://evil.com` against a catch-all `path: "/*"` reverse proxy route.
+- HTTP/2 detection requires TLS with a non-empty SNI. If the client connects without SNI, only HTTP/1.1 detection applies.
 - `path` and `domain` matchers are ignored for forward proxy routes (they belong to the target site, not the proxy server).
 - `methods` can be combined with `forward_proxy` to filter by HTTP method.
 
