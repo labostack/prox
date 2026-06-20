@@ -176,7 +176,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Forward proxy: relay to target from the absolute URL via upstream.
-	if r.URL.Scheme != "" && r.URL.Host != "" {
+	if router.IsForwardProxyRequest(r) {
 		serveForwardProxy(w, r, p.target, p.headers, p.timeout)
 		return
 	}
@@ -250,7 +250,7 @@ func (p *Proxy) serveDynamic(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Forward proxy: relay to target from the absolute URL via upstream.
-	if r.URL.Scheme != "" && r.URL.Host != "" {
+	if router.IsForwardProxyRequest(r) {
 		serveForwardProxy(w, r, target, p.headers, p.timeout)
 		return
 	}
@@ -303,7 +303,27 @@ func serveForwardProxy(w http.ResponseWriter, r *http.Request, target *url.URL, 
 	// so the upstream proxy receives a proper forward proxy request line
 	// (e.g. "GET http://example.com/path HTTP/1.1").
 	outReq := r.Clone(r.Context())
-	outReq.RequestURI = r.URL.String()
+	if r.URL.Scheme != "" && r.URL.Host != "" {
+		// HTTP/1.1: absolute URL already in r.URL.
+		outReq.RequestURI = r.URL.String()
+	} else {
+		// HTTP/2: Go does not populate r.URL.Scheme/Host from pseudo-headers.
+		// Reconstruct the absolute URL from :authority (r.Host) and :path (r.URL).
+		targetURL := &url.URL{
+			Scheme:   "http",
+			Host:     r.Host,
+			Path:     r.URL.Path,
+			RawQuery: r.URL.RawQuery,
+		}
+		outReq.URL = targetURL
+		outReq.RequestURI = targetURL.String()
+		outReq.Host = r.Host
+	}
+
+	// Downgrade to HTTP/1.1 for upstream — raw TCP connection, no H2 framing.
+	outReq.Proto = "HTTP/1.1"
+	outReq.ProtoMajor = 1
+	outReq.ProtoMinor = 1
 
 	// Apply configured headers.
 	for k, v := range headers {

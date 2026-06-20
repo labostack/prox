@@ -7,6 +7,7 @@ package router
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ type MatchResult struct {
 	Path          string // actual request path
 	Target        string // selected target from balancer (empty if no balancer)
 	Vars          map[string]string // route-level variables from "set"
+	ForwardProxy  bool   // true when matched via a forward_proxy route
 	done          func() // release callback for connection-tracking balancers
 
 	// Speed limiting — populated from route config.
@@ -332,6 +334,7 @@ func (rt *Router) Match(r *http.Request) (*http.Request, string) {
 			Domain:         host,
 			Path:           r.URL.Path,
 			Vars:           route.vars,
+			ForwardProxy:   route.forwardProxy,
 			DownloadBucket: route.downloadBucket,
 			UploadBucket:   route.uploadBucket,
 			DownloadBps:    route.downloadBps,
@@ -398,22 +401,45 @@ func (cr *compiledRoute) matchMethod(method string) bool {
 	return cr.methods[method]
 }
 
-// isForwardProxyRequest reports whether the HTTP request is a forward proxy
-// request. Go's net/http parses forward proxy requests ("GET http://host/path")
-// into r.URL with Scheme and Host populated.
-func isForwardProxyRequest(r *http.Request) bool {
-	return r.URL.Scheme != "" && r.URL.Host != ""
+// IsForwardProxyRequest reports whether the HTTP request is a forward proxy
+// request. Two cases are detected:
+//
+//  1. HTTP/1.1: absolute URL in request line ("GET http://host/path HTTP/1.1").
+//     Go's net/http parses this into r.URL with Scheme and Host populated.
+//
+//  2. HTTP/2 over TLS: the :authority pseudo-header (mapped to r.Host) differs
+//     from the TLS SNI hostname (r.TLS.ServerName). This happens when a browser
+//     connects to the proxy via HTTPS/H2 and sends requests for a different target.
+//     Go's HTTP/2 server does not populate r.URL.Scheme from the :scheme
+//     pseudo-header, so case 1 does not match.
+func IsForwardProxyRequest(r *http.Request) bool {
+	// HTTP/1.1: absolute URL in request line.
+	if r.URL.Scheme != "" && r.URL.Host != "" {
+		return true
+	}
+	// HTTP/2 over TLS: :authority differs from TLS SNI.
+	if r.ProtoMajor >= 2 && r.TLS != nil && r.TLS.ServerName != "" {
+		reqHost := r.Host
+		if h, _, err := net.SplitHostPort(reqHost); err == nil {
+			reqHost = h
+		}
+		if !strings.EqualFold(reqHost, r.TLS.ServerName) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchForwardProxy checks if the request matches this route's forward proxy setting.
-// When forwardProxy is true, only forward proxy requests (absolute URL) match.
+// When forwardProxy is true, only forward proxy requests (absolute URL or
+// HTTP/2 SNI mismatch) match.
 // When forwardProxy is false, forward proxy requests are rejected — they must
 // be routed to a dedicated forward_proxy route or return 404.
 func (cr *compiledRoute) matchForwardProxy(r *http.Request) bool {
 	if cr.forwardProxy {
-		return isForwardProxyRequest(r)
+		return IsForwardProxyRequest(r)
 	}
-	return !isForwardProxyRequest(r)
+	return !IsForwardProxyRequest(r)
 }
 
 // matchDomain checks if the request host matches this route's domain pattern.

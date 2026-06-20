@@ -1,6 +1,7 @@
 package router
 
 import (
+	"crypto/tls"
 	"net/http"
 	"testing"
 
@@ -885,5 +886,141 @@ func TestRouter_ForwardProxyCatchAllOptimizationDisabled(t *testing.T) {
 	_, got = rt.Match(r)
 	if got != "forward" {
 		t.Errorf("forward proxy: expected %q, got %q", "forward", got)
+	}
+}
+
+// ── HTTP/2 forward proxy tests ─────────────────────────────────────────
+
+func TestIsForwardProxyRequest_H2_SNIMismatch(t *testing.T) {
+	// HTTP/2 over TLS where :authority differs from SNI → forward proxy.
+	r, _ := http.NewRequest("GET", "/path", nil)
+	r.Host = "ifconfig.io"
+	r.ProtoMajor = 2
+	r.ProtoMinor = 0
+	r.TLS = &tls.ConnectionState{ServerName: "proxy.example.com"}
+
+	if !IsForwardProxyRequest(r) {
+		t.Error("HTTP/2 SNI mismatch should be detected as forward proxy")
+	}
+}
+
+func TestIsForwardProxyRequest_H2_SameHost(t *testing.T) {
+	// HTTP/2 where :authority matches SNI → NOT forward proxy (regular request).
+	r, _ := http.NewRequest("GET", "/page", nil)
+	r.Host = "api.example.com"
+	r.ProtoMajor = 2
+	r.ProtoMinor = 0
+	r.TLS = &tls.ConnectionState{ServerName: "api.example.com"}
+
+	if IsForwardProxyRequest(r) {
+		t.Error("HTTP/2 same host should NOT be detected as forward proxy")
+	}
+}
+
+func TestIsForwardProxyRequest_H2_SameHostCaseInsensitive(t *testing.T) {
+	// Case-insensitive: "API.Example.COM" == "api.example.com".
+	r, _ := http.NewRequest("GET", "/page", nil)
+	r.Host = "API.Example.COM"
+	r.ProtoMajor = 2
+	r.ProtoMinor = 0
+	r.TLS = &tls.ConnectionState{ServerName: "api.example.com"}
+
+	if IsForwardProxyRequest(r) {
+		t.Error("case-insensitive match should NOT be forward proxy")
+	}
+}
+
+func TestIsForwardProxyRequest_H2_HostWithPort(t *testing.T) {
+	// :authority with port — port should be stripped for comparison.
+	r, _ := http.NewRequest("GET", "/path", nil)
+	r.Host = "external.com:8080"
+	r.ProtoMajor = 2
+	r.ProtoMinor = 0
+	r.TLS = &tls.ConnectionState{ServerName: "proxy.example.com"}
+
+	if !IsForwardProxyRequest(r) {
+		t.Error("HTTP/2 :authority with port and SNI mismatch should be forward proxy")
+	}
+}
+
+func TestIsForwardProxyRequest_H2_NoSNI(t *testing.T) {
+	// No SNI (empty ServerName) — cannot detect, should return false.
+	r, _ := http.NewRequest("GET", "/path", nil)
+	r.Host = "external.com"
+	r.ProtoMajor = 2
+	r.ProtoMinor = 0
+	r.TLS = &tls.ConnectionState{ServerName: ""}
+
+	if IsForwardProxyRequest(r) {
+		t.Error("empty SNI should NOT trigger forward proxy detection")
+	}
+}
+
+func TestRouter_ForwardProxyH2Match(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{Domain: "*.**", Path: "/*"},
+			Action: config.ActionRef{Name: "reverse"},
+		},
+		{
+			Match:  &config.Match{ForwardProxy: true},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	// HTTP/2 forward proxy request (SNI mismatch) should skip reverse route
+	// and match the forward_proxy route.
+	r, _ := http.NewRequest("GET", "/", nil)
+	r.Host = "ifconfig.io"
+	r.ProtoMajor = 2
+	r.TLS = &tls.ConnectionState{ServerName: "gw.proxy.com"}
+	_, got := rt.Match(r)
+	if got != "forward" {
+		t.Errorf("HTTP/2 forward proxy: expected %q, got %q", "forward", got)
+	}
+
+	// Same request as regular H2 (SNI matches Host) → should match reverse.
+	r, _ = http.NewRequest("GET", "/page", nil)
+	r.Host = "sub.example.com"
+	r.ProtoMajor = 2
+	r.TLS = &tls.ConnectionState{ServerName: "sub.example.com"}
+	_, got = rt.Match(r)
+	if got != "reverse" {
+		t.Errorf("regular H2: expected %q, got %q", "reverse", got)
+	}
+}
+
+func TestRouter_ForwardProxyH2_MatchResult(t *testing.T) {
+	rt := New([]*config.Route{
+		{
+			Match:  &config.Match{ForwardProxy: true},
+			Action: config.ActionRef{Name: "forward"},
+		},
+	})
+
+	// HTTP/2 forward proxy — MatchResult.ForwardProxy should be true.
+	r, _ := http.NewRequest("GET", "/path", nil)
+	r.Host = "target.io"
+	r.ProtoMajor = 2
+	r.TLS = &tls.ConnectionState{ServerName: "proxy.local"}
+	r, _ = rt.Match(r)
+	match := GetMatchResult(r)
+	if match == nil {
+		t.Fatal("expected MatchResult, got nil")
+	}
+	if !match.ForwardProxy {
+		t.Error("MatchResult.ForwardProxy should be true")
+	}
+
+	// HTTP/1.1 forward proxy — also ForwardProxy=true.
+	r, _ = http.NewRequest("GET", "http://example.com/page", nil)
+	r.Host = "example.com"
+	r, _ = rt.Match(r)
+	match = GetMatchResult(r)
+	if match == nil {
+		t.Fatal("expected MatchResult, got nil")
+	}
+	if !match.ForwardProxy {
+		t.Error("MatchResult.ForwardProxy should be true for HTTP/1.1")
 	}
 }
