@@ -67,6 +67,41 @@ Domain patterns are also used for [L4 dispatching](../deployment.md#l4-dispatchi
 }
 ```
 
+## Forward Proxy
+
+The `forward_proxy` matcher selects routes that handle **forward proxy requests** — HTTP requests with an absolute URL in the request line (e.g. `GET http://example.com/path`).
+
+When a browser extension or system proxy setting sends traffic through prox, HTTPS sites use `CONNECT` tunneling while plain HTTP sites send standard requests with absolute URLs. The `forward_proxy: true` matcher catches the latter case.
+
+```json5
+{
+  match: { forward_proxy: true },
+  action: { type: "proxy", upstream: "squid:3128" },
+}
+```
+
+**Key behavior:**
+
+- `forward_proxy: true` — matches only forward proxy requests (absolute URL). Regular reverse proxy requests are ignored.
+- Without `forward_proxy` (default) — forward proxy requests are **rejected** by the route. This prevents accidental matching of `GET http://evil.com` against a catch-all `path: "/*"` reverse proxy route.
+- `path` and `domain` matchers are ignored for forward proxy routes (they belong to the target site, not the proxy server).
+- `methods` can be combined with `forward_proxy` to filter by HTTP method.
+
+**Example: combined CONNECT + HTTP forward proxy:**
+
+```json5
+// HTTPS traffic — CONNECT tunneling
+{
+  match: { domain: "*.**", methods: ["CONNECT"] },
+  action: { type: "proxy", upstream: "squid:3128" },
+},
+// HTTP traffic — forward proxy with absolute URL
+{
+  match: { forward_proxy: true },
+  action: { type: "proxy", upstream: "squid:3128" },
+},
+```
+
 ## Multiple Path Patterns
 
 A single route can match multiple paths by listing them as a **comma-separated** string:

@@ -144,6 +144,17 @@
           },
         },
 
+        // Forward proxy — handle plain HTTP requests with absolute URLs.
+        // HTTPS goes through CONNECT; plain HTTP uses forward_proxy.
+        // {
+        //   match: { domain: "*.**", methods: ["CONNECT"] },
+        //   action: { type: "proxy", upstream: "squid:3128" },
+        // },
+        // {
+        //   match: { forward_proxy: true },
+        //   action: { type: "proxy", upstream: "squid:3128" },
+        // },
+
         // Drop all unmatched requests.
         { action: { type: "drop" } },
       ],
