@@ -18,10 +18,11 @@ Routes can distribute requests across multiple upstream targets using a `balance
 
 ## Configuration
 
-| Field     | Type     | Required | Description                                                      |
-| --------- | -------- | -------- | ---------------------------------------------------------------- |
-| `type`    | string   | ✓        | Balancing strategy: `"roundrobin"`, `"random"`, or `"leastconn"` |
-| `targets` | string[] | ✓        | List of upstream addresses                                       |
+| Field      | Type     | Required | Description                                                      |
+| ---------- | -------- | -------- | ---------------------------------------------------------------- |
+| `type`     | string   | ✓        | Balancing strategy: `"roundrobin"`, `"random"`, or `"leastconn"` |
+| `targets`  | string[] | ✓        | List of upstream addresses                                       |
+| `fallback` | bool     |          | Pick a random target from all groups when the key has no match   |
 
 ## Strategies
 
@@ -90,6 +91,37 @@ The `leastconn` strategy tracks active connections per target. A connection is c
 }
 ```
 
+## Fallback
+
+When using [plugins](../plugins/index.md) with grouped targets (`SetGroupedTargets` / `SetActionGroupedTargets`), the balancer normally returns an empty result if the requested key has no matching group. With `fallback: true`, the balancer instead picks a **random target from all groups**.
+
+This is useful for service discovery scenarios where a request may arrive for an unknown key — instead of failing, it gets routed to any available server.
+
+```json5
+{
+  match: { domain: "*.**" },
+  plugins: ["./plugins/discovery"],
+  balancer: {
+    type: "leastconn",
+    fallback: true,
+  },
+  action: {
+    type: "proxy",
+    upstream: "{target}",
+  },
+}
+```
+
+Fallback activates when:
+
+- The key has **no matching group** in the grouped target map
+- The key's group exists but has an **empty target list**
+
+Fallback does **not** activate when:
+
+- No groups are configured at all (delegates to the inner flat balancer)
+- The key is empty (delegates to the inner flat balancer)
+
 ## Dynamic Targets
 
 Balancer targets can be populated dynamically by [plugins](../plugins/index.md). Set `targets` to an empty array and attach a plugin that pushes targets at runtime:
@@ -110,3 +142,4 @@ Balancer targets can be populated dynamically by [plugins](../plugins/index.md).
 ```
 
 See the [Plugins](../plugins/index.md) section for the target push API.
+
