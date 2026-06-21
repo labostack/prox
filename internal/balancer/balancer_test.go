@@ -209,3 +209,89 @@ func TestLeastConn_Concurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestGrouped_FallbackDisabled(t *testing.T) {
+	inner := NewRoundRobin(nil)
+	g := NewGrouped("roundrobin", inner)
+	g.SwapGroupedTargets(map[string][]string{
+		"us": {"10.0.1.1:443", "10.0.1.2:443"},
+		"eu": {"10.0.2.1:443"},
+	})
+
+	// Key not found without fallback → empty string.
+	if got := g.NextKeyed("jp"); got != "" {
+		t.Errorf("fallback disabled: got %q, want empty", got)
+	}
+}
+
+func TestGrouped_FallbackEnabled(t *testing.T) {
+	inner := NewRoundRobin(nil)
+	g := NewGrouped("roundrobin", inner)
+	g.SetFallback(true)
+	g.SwapGroupedTargets(map[string][]string{
+		"us": {"10.0.1.1:443", "10.0.1.2:443"},
+		"eu": {"10.0.2.1:443"},
+	})
+
+	all := map[string]bool{
+		"10.0.1.1:443": true,
+		"10.0.1.2:443": true,
+		"10.0.2.1:443": true,
+	}
+
+	// Key not found with fallback → random from all targets.
+	for i := 0; i < 50; i++ {
+		got := g.NextKeyed("jp")
+		if got == "" {
+			t.Fatal("fallback enabled: got empty string")
+		}
+		if !all[got] {
+			t.Errorf("fallback enabled: got %q which is not in any group", got)
+		}
+	}
+
+	// Existing key still works normally.
+	got := g.NextKeyed("eu")
+	if got != "10.0.2.1:443" {
+		t.Errorf("existing key: got %q, want %q", got, "10.0.2.1:443")
+	}
+}
+
+func TestGrouped_FallbackEmptyGroup(t *testing.T) {
+	inner := NewRoundRobin(nil)
+	g := NewGrouped("roundrobin", inner)
+	g.SetFallback(true)
+	g.SwapGroupedTargets(map[string][]string{
+		"us": {},                              // empty group
+		"eu": {"10.0.2.1:443", "10.0.2.2:443"},
+	})
+
+	// Key matches empty group → fallback to random from all.
+	for i := 0; i < 20; i++ {
+		got := g.NextKeyed("us")
+		if got == "" {
+			t.Fatal("fallback for empty group: got empty string")
+		}
+		if got != "10.0.2.1:443" && got != "10.0.2.2:443" {
+			t.Errorf("fallback for empty group: got %q, expected an eu target", got)
+		}
+	}
+}
+
+func TestGrouped_FallbackAllEmpty(t *testing.T) {
+	inner := NewRoundRobin(nil)
+	g := NewGrouped("roundrobin", inner)
+	g.SetFallback(true)
+	g.SwapGroupedTargets(map[string][]string{
+		"us": {},
+		"eu": {},
+	})
+
+	// All groups empty → fallback has nothing to pick from → empty.
+	if got := g.NextKeyed("us"); got != "" {
+		t.Errorf("all empty: got %q, want empty", got)
+	}
+	if got := g.NextKeyed("unknown"); got != "" {
+		t.Errorf("all empty unknown key: got %q, want empty", got)
+	}
+}
