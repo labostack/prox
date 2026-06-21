@@ -85,6 +85,7 @@ func Build(cfg *config.Config, configDir string) (*Group, error) {
 				inner := rt.RouteBalancer(i)
 				if inner != nil {
 					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
+					grouped.SetFallback(route.Balancer.Fallback)
 					rt.SetRouteBalancer(i, grouped)
 					routeID := fmt.Sprintf("%s:%d", name, i)
 					routeBalancers[routeID] = grouped
@@ -196,6 +197,7 @@ func (g *Group) Reload(cfg *config.Config) error {
 				inner := rt.RouteBalancer(i)
 				if inner != nil {
 					grouped := bal.NewGrouped(string(route.Balancer.Type), inner)
+					grouped.SetFallback(route.Balancer.Fallback)
 					rt.SetRouteBalancer(i, grouped)
 					routeID := fmt.Sprintf("%s:%d", name, i)
 					routeBalancers[routeID] = grouped

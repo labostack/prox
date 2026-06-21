@@ -200,8 +200,12 @@ type KeyedBalancer interface {
 // Grouped wraps a balancing strategy and provides per-key target pools.
 // In flat mode (via SwapTargets), all requests use the inner balancer.
 // In grouped mode (via SwapGroupedTargets), each key has its own sub-balancer.
+//
+// When fallback is enabled, NextKeyed picks a random target from all groups
+// if the requested key has no matching group (or the group is empty).
 type Grouped struct {
 	strategy string
+	fallback bool     // pick random from all groups when key not found
 	inner    Balancer // flat-mode fallback
 	groups   atomic.Pointer[groupedMap]
 	mu       sync.Mutex // protects SwapGroupedTargets
@@ -209,7 +213,8 @@ type Grouped struct {
 
 type groupedMap struct {
 	m           map[string]Balancer
-	targetGroup map[string]string // target → group key for O(1) Done() routing
+	targetGroup map[string]string   // target → group key for O(1) Done() routing
+	allTargets  []string            // flat list of all targets for fallback selection
 }
 
 // NewGrouped creates a grouped balancer wrapping an inner flat balancer.
@@ -221,6 +226,13 @@ func NewGrouped(strategy string, inner Balancer) *Grouped {
 	}
 }
 
+// SetFallback enables or disables random fallback across all groups.
+// When enabled, NextKeyed picks a random target from all groups if
+// the requested key has no matching group or the group pool is empty.
+func (g *Grouped) SetFallback(enabled bool) {
+	g.fallback = enabled
+}
+
 // Next delegates to the inner flat balancer (ignores grouping).
 func (g *Grouped) Next() string {
 	return g.inner.Next()
@@ -228,10 +240,19 @@ func (g *Grouped) Next() string {
 
 // NextKeyed selects a target from the sub-pool matching the key.
 // Falls back to the inner balancer if no groups are configured or key is empty.
+// When fallback is enabled, picks a random target from all groups if the
+// key has no matching group or the matched group's pool is empty.
 func (g *Grouped) NextKeyed(key string) string {
 	if gm := g.groups.Load(); gm != nil && key != "" {
 		if bal, ok := gm.m[key]; ok {
-			return bal.Next()
+			if target := bal.Next(); target != "" {
+				return target
+			}
+			// Group exists but pool is empty — fall through to fallback.
+		}
+		// Key not found or group empty — try fallback.
+		if g.fallback && len(gm.allTargets) > 0 {
+			return gm.allTargets[rand.Intn(len(gm.allTargets))]
 		}
 		return ""
 	}
@@ -283,13 +304,15 @@ func (g *Grouped) SwapGroupedTargets(groups map[string][]string) {
 	}
 
 	tg := make(map[string]string, len(groups)*2)
+	var all []string
 	for key, targets := range groups {
 		for _, t := range targets {
 			tg[t] = key
 		}
+		all = append(all, targets...)
 	}
 
-	g.groups.Store(&groupedMap{m: newMap, targetGroup: tg})
+	g.groups.Store(&groupedMap{m: newMap, targetGroup: tg, allTargets: all})
 }
 
 // NewByType creates a flat balancer of the given type.

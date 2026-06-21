@@ -239,8 +239,9 @@ const (
 // BalancerConfig defines a load balancer for distributing requests across targets.
 // The selected target is available as {target} in the action's upstream field.
 type BalancerConfig struct {
-	Type    BalancerType `json:"type"`
-	Targets []string     `json:"targets"`
+	Type     BalancerType `json:"type"`
+	Targets  []string     `json:"targets"`
+	Fallback bool         `json:"fallback,omitempty"` // When true and using grouped targets, pick a random target from all groups if the key has no match.
 }
 
 // ActionType represents the kind of action to execute.
