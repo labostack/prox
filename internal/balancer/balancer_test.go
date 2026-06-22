@@ -295,3 +295,44 @@ func TestGrouped_FallbackAllEmpty(t *testing.T) {
 		t.Errorf("all empty unknown key: got %q, want empty", got)
 	}
 }
+
+func TestGrouped_NextFallback(t *testing.T) {
+	// Inner balancer has no targets (empty pool).
+	inner := NewRoundRobin(nil)
+	g := NewGrouped("roundrobin", inner)
+	g.SetFallback(true)
+	g.SwapGroupedTargets(map[string][]string{
+		"us": {"10.0.1.1:443"},
+		"eu": {"10.0.2.1:443"},
+	})
+
+	all := map[string]bool{
+		"10.0.1.1:443": true,
+		"10.0.2.1:443": true,
+	}
+
+	// Next() with empty inner + fallback → random from all grouped targets.
+	for i := 0; i < 50; i++ {
+		got := g.Next()
+		if got == "" {
+			t.Fatal("Next fallback: got empty string")
+		}
+		if !all[got] {
+			t.Errorf("Next fallback: got %q which is not in any group", got)
+		}
+	}
+}
+
+func TestGrouped_NextNoFallback(t *testing.T) {
+	inner := NewRoundRobin(nil)
+	g := NewGrouped("roundrobin", inner)
+	// fallback is false (default)
+	g.SwapGroupedTargets(map[string][]string{
+		"us": {"10.0.1.1:443"},
+	})
+
+	// Next() with empty inner + no fallback → empty.
+	if got := g.Next(); got != "" {
+		t.Errorf("Next no fallback: got %q, want empty", got)
+	}
+}

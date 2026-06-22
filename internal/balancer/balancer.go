@@ -233,9 +233,18 @@ func (g *Grouped) SetFallback(enabled bool) {
 	g.fallback = enabled
 }
 
-// Next delegates to the inner flat balancer (ignores grouping).
+// Next delegates to the inner flat balancer. When the inner pool is empty
+// and fallback is enabled, picks a random target from all grouped targets.
 func (g *Grouped) Next() string {
-	return g.inner.Next()
+	if target := g.inner.Next(); target != "" {
+		return target
+	}
+	if g.fallback {
+		if gm := g.groups.Load(); gm != nil && len(gm.allTargets) > 0 {
+			return gm.allTargets[rand.Intn(len(gm.allTargets))]
+		}
+	}
+	return ""
 }
 
 // NextKeyed selects a target from the sub-pool matching the key.
